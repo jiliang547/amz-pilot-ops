@@ -8,6 +8,13 @@
       "when": 1785143068219,
       "tag": "0000_famous_paibok",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785144766206,
+      "tag": "0001_chubby_wilson_fisk",
+      "breakpoints": true
     }
   ]
 }
