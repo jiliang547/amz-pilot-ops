@@ -23,6 +23,7 @@ const localBindingConfig = {
         },
       ]
     : [],
+  triggers: { crons: ["*/5 * * * *"] },
   r2_buckets: r2
     ? [
         {

@@ -1,4 +1,18 @@
-// Intentionally empty by default.
-// Add Drizzle tables here when the site actually needs a database.
-// See examples/d1/db/schema.ts for an opt-in example.
-export {};
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(), username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(), passwordSalt: text("password_salt").notNull(),
+  role: text("role").notNull().default("operator"), mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
+});
+export const sessions = sqliteTable("sessions", { tokenHash: text("token_hash").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), expiresAt: integer("expires_at").notNull(), createdAt: integer("created_at").notNull() });
+export const invites = sqliteTable("invites", { codeHash: text("code_hash").primaryKey(), createdBy: text("created_by").notNull().references(() => users.id), maxUses: integer("max_uses").notNull(), useCount: integer("use_count").notNull().default(0), expiresAt: integer("expires_at").notNull(), revokedAt: integer("revoked_at"), createdAt: integer("created_at").notNull() });
+export const accounts = sqliteTable("accounts", { id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), name: text("name").notNull(), region: text("region").notNull(), profileId: text("profile_id").notNull(), advertiserAccountId: text("advertiser_account_id"), encryptedCredentials: text("encrypted_credentials").notNull(), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull() }, t => [uniqueIndex("accounts_user_profile_idx").on(t.userId, t.profileId)]);
+export const conversations = sqliteTable("conversations", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id").notNull(), title: text("title").notNull(), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull() });
+export const messages = sqliteTable("messages", { id: text("id").primaryKey(), conversationId: text("conversation_id").notNull(), role: text("role").notNull(), content: text("content").notNull(), createdAt: integer("created_at").notNull() });
+export const approvals = sqliteTable("approvals", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id").notNull(), toolName: text("tool_name").notNull(), toolArgs: text("tool_args").notNull(), summary: text("summary").notNull(), status: text("status").notNull(), result: text("result"), createdAt: integer("created_at").notNull(), executedAt: integer("executed_at") });
+export const tasks = sqliteTable("tasks", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id").notNull(), name: text("name").notNull(), prompt: text("prompt").notNull(), scheduleType: text("schedule_type").notNull(), scheduledTime: text("scheduled_time").notNull(), timezone: text("timezone").notNull(), dayOfWeek: integer("day_of_week"), requireApproval: integer("require_approval", { mode: "boolean" }).notNull().default(true), status: text("status").notNull(), nextRunAt: integer("next_run_at").notNull(), lastRunAt: integer("last_run_at"), createdAt: integer("created_at").notNull() });
+export const taskRuns = sqliteTable("task_runs", { id: text("id").primaryKey(), taskId: text("task_id").notNull(), status: text("status").notNull(), detail: text("detail"), startedAt: integer("started_at").notNull(), finishedAt: integer("finished_at") });
+export const auditLogs = sqliteTable("audit_logs", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id"), action: text("action").notNull(), target: text("target"), detail: text("detail"), outcome: text("outcome").notNull(), createdAt: integer("created_at").notNull() });
+export const loginAttempts = sqliteTable("login_attempts", { id: text("id").primaryKey(), username: text("username").notNull(), ipHash: text("ip_hash").notNull(), success: integer("success", { mode: "boolean" }).notNull(), createdAt: integer("created_at").notNull() });

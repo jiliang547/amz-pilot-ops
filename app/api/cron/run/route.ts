@@ -1,0 +1,2 @@
+import { appEnv } from "@/lib/db";import { runDueTasks } from "@/lib/scheduler";
+export async function POST(request:Request){const expected=appEnv().CRON_SECRET;if(!expected||request.headers.get("authorization")!==`Bearer ${expected}`)return Response.json({error:"unauthorized"},{status:401});return Response.json({processed:await runDueTasks()});}

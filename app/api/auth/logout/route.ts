@@ -1,0 +1,2 @@
+import { assertSameOrigin,clearSessionCookie,deleteSession } from "@/lib/auth";
+export async function POST(request:Request){try{assertSameOrigin(request);await deleteSession(request);return new Response(JSON.stringify({ok:true}),{headers:{"content-type":"application/json","set-cookie":clearSessionCookie()}});}catch{return Response.json({error:"退出失败"},{status:400});}}
