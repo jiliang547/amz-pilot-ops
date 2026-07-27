@@ -4,7 +4,7 @@ export type AppEnv = {
   DB: D1Database;
   CREDENTIAL_ENCRYPTION_KEY?: string;
   MODEL_BASE_URL?: string; MODEL_API_KEY?: string; MODEL_NAME?: string; MODEL_USER_AGENT?: string;
-  AMAZON_MCP_URL?: string; BOOTSTRAP_AMAZON_CREDENTIALS?: string; CRON_SECRET?: string;
+  AMAZON_MCP_URL?: string; BOOTSTRAP_AMAZON_CREDENTIALS?: string; CRON_SECRET?: string; AUTH_PEPPER?: string;
 };
 export function appEnv(): AppEnv { return env as unknown as AppEnv; }
 export function d1(): D1Database { const db = appEnv().DB; if (!db) throw new Error("数据库尚未配置"); return db; }
@@ -32,8 +32,10 @@ export function ensureSchema(): Promise<void> {
     await db.batch(sql.map(s => db.prepare(s)));
     const now = Date.now();
     await db.batch([
-      db.prepare(`INSERT OR IGNORE INTO users (id,username,password_hash,password_salt,role,must_change_password,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`).bind("usr_jiliang","jiliang","fqVs55/Owrk204du2gC3cPdiKSOo8vGU6pDl1OjmyXM=","XrUhiyfz0ehg8XLLY9z9wg==","admin",1,now,now),
-      db.prepare(`INSERT OR IGNORE INTO users (id,username,password_hash,password_salt,role,must_change_password,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`).bind("usr_cyl","cyl","Iwga1lcF8gmgh9YzHs/gHJXQlUhuEAUg9o/ijIdNg2s=","bjY1IXOYLRZ5qyH0bhWDaw==","operator",1,now,now),
+      db.prepare(`INSERT OR IGNORE INTO users (id,username,password_hash,password_salt,role,must_change_password,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`).bind("usr_jiliang","jiliang","2klPVh/8uuDr23re4HOhiM1jBuiJdHzeOBSgcdGkp6k=","/zah47YICLqONKFqNKVEwA==","admin",1,now,now),
+      db.prepare(`INSERT OR IGNORE INTO users (id,username,password_hash,password_salt,role,must_change_password,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`).bind("usr_cyl","cyl","oTFrCQLrcO72g0r9SINsBLBXujQ6XM8Z7ws7vV2TFZ0=","ihEMjk45NQRTH/EAJpjvHw==","operator",1,now,now),
+      db.prepare(`UPDATE users SET password_hash=?,password_salt=?,updated_at=? WHERE username='jiliang' AND must_change_password=1`).bind("2klPVh/8uuDr23re4HOhiM1jBuiJdHzeOBSgcdGkp6k=","/zah47YICLqONKFqNKVEwA==",now),
+      db.prepare(`UPDATE users SET password_hash=?,password_salt=?,updated_at=? WHERE username='cyl' AND must_change_password=1`).bind("oTFrCQLrcO72g0r9SINsBLBXujQ6XM8Z7ws7vV2TFZ0=","ihEMjk45NQRTH/EAJpjvHw==",now),
     ]);
   })().catch(e => { ready = null; throw e; });
   return ready;
