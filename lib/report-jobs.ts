@@ -22,7 +22,9 @@ function walk(value: unknown, visitor: (key: string, value: unknown) => void, ke
 export function extractReportIds(value: unknown): string[] {
   const ids = new Set<string>();
   walk(value, (key, item) => {
-    if (typeof item === "string" && key.replace(/[_-]/g, "").toLowerCase() === "reportid" && item.trim()) ids.add(item.trim());
+    if (typeof item !== "string") return;
+    if (key.replace(/[_-]/g, "").toLowerCase() === "reportid" && item.trim()) ids.add(item.trim());
+    for (const match of item.matchAll(/["']?report[_-]?id["']?\s*[:=]\s*["']?([A-Za-z0-9._:-]{8,})/gi)) ids.add(match[1]);
   });
   return [...ids];
 }
@@ -44,6 +46,18 @@ function reportState(value: unknown): "PENDING" | "COMPLETED" | "FAILED" | "CANC
   if (/\bCOMPLETED\b/i.test(text)) return "COMPLETED";
   if (/\b(PENDING|IN_PROGRESS|PROCESSING)\b/i.test(text)) return "PENDING";
   return "UNKNOWN";
+}
+
+function reportFailure(value: unknown): string | undefined {
+  const text = JSON.stringify(value);
+  const code = text.match(/["']?failureCode["']?\s*[:=]\s*["']([^"']+)/i)?.[1];
+  const reason = text.match(/["']?failureReason["']?\s*[:=]\s*["']([^"']+)/i)?.[1];
+  return [code, reason].filter(Boolean).join(": ") || undefined;
+}
+
+function isTransientError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(408|409|425|429|500|502|503|504)\b|timeout|timed out|network|fetch failed|connection reset/i.test(message);
 }
 
 function sanitizeSignedUrls(value: unknown): unknown {
@@ -135,7 +149,7 @@ async function downloadAndPersist(job: JobRow, value: unknown, context: Workflow
     const filename = `amazon-ads-${job.report_id ?? job.id}-part-${part}.csv`;
     await bucket.put(objectKey, bytes, { httpMetadata: { contentType: "text/csv; charset=utf-8" } });
     await d1().prepare(`INSERT INTO report_files(id,report_job_id,part_number,object_key,filename,content_type,size,row_count,summary_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(report_job_id,part_number) DO UPDATE SET object_key=excluded.object_key,filename=excluded.filename,size=excluded.size,row_count=excluded.row_count,summary_json=excluded.summary_json`).bind(crypto.randomUUID(), job.id, part, objectKey, filename, "text/csv; charset=utf-8", bytes.byteLength, summary.rowCount, JSON.stringify(summary), Date.now()).run();
-    reports.push({ part, filename, size: bytes.byteLength, ...summary, csvPreview: csv.slice(0, 30_000), previewTruncated: csv.length > 30_000 });
+    reports.push({ part, filename, size: bytes.byteLength, ...summary });
   }
   await d1().prepare(`UPDATE report_jobs SET status='COMPLETED',error=NULL,updated_at=?,completed_at=? WHERE id=?`).bind(Date.now(), Date.now(), job.id).run();
   return { amazonResponse: sanitizeSignedUrls(value), reportId: job.report_id, status: "COMPLETED", downloadedReports: reports, note: "aggregates 是服务端对完整 CSV 的汇总；原始 CSV 已私有保存，可从报表记录下载。" };
@@ -147,15 +161,42 @@ async function pollReport(client: AmazonMcpClient, job: JobRow, context: Workflo
   while (true) {
     poll++;
     context.onStatus?.(`正在轮询同一个 Report ID（第 ${poll} 次，间隔 15 秒）`);
-    const result = await client.callTool("reporting-retrieve_report", { body: { reportIds: [job.report_id] } });
+    let result: unknown;
+    try {
+      result = await client.callTool("reporting-retrieve_report", { body: { reportIds: [job.report_id] } });
+    } catch (error) {
+      if (!isTransientError(error)) {
+        const message = error instanceof Error ? error.message : String(error);
+        await d1().prepare(`UPDATE report_jobs SET error=?,updated_at=? WHERE id=?`).bind(message.slice(0, 1000), Date.now(), job.id).run();
+        throw error;
+      }
+      const retryDelay = Math.min(60_000, POLL_INTERVAL_MS * Math.max(1, Math.ceil(poll / 4)));
+      context.onStatus?.(`Amazon 报表状态查询暂时不可用，${Math.round(retryDelay / 1000)} 秒后继续轮询原 Report ID`);
+      await sleep(retryDelay);
+      continue;
+    }
     const state = reportState(result);
     await d1().prepare(`UPDATE report_jobs SET status=?,updated_at=? WHERE id=?`).bind(state === "UNKNOWN" ? "PENDING" : state, Date.now(), job.id).run();
     if (state === "FAILED" || state === "CANCELLED") {
-      const error = `Amazon 报表状态为 ${state}`;
+      const detail = reportFailure(result);
+      const error = `Amazon 报表状态为 ${state}${detail ? `：${detail}` : ""}`;
       await d1().prepare(`UPDATE report_jobs SET error=?,updated_at=? WHERE id=?`).bind(error, Date.now(), job.id).run();
       throw new Error(error);
     }
-    if (state === "COMPLETED") return downloadAndPersist(job, result, context);
+    if (state === "COMPLETED") {
+      if (!reportUrls(result).length) {
+        context.onStatus?.("报表状态已完成，正在等待 Amazon 返回下载文件");
+        await sleep(POLL_INTERVAL_MS);
+        continue;
+      }
+      try {
+        return await downloadAndPersist(job, result, context);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await d1().prepare(`UPDATE report_jobs SET status='DOWNLOAD_FAILED',error=?,updated_at=? WHERE id=?`).bind(message.slice(0, 1000), Date.now(), job.id).run();
+        throw error;
+      }
+    }
     await sleep(POLL_INTERVAL_MS);
   }
 }
@@ -172,10 +213,22 @@ export async function executeReportTool(client: AmazonMcpClient, name: string, a
   const requestFingerprint = await fingerprint(name, args);
   let job = await upsertJob(context, name, requestFingerprint, args);
   const saved = await savedResult(job); if (saved) { context.onStatus?.("发现相同条件的已完成报表，直接复用私有保存结果"); return saved; }
-  if (job.report_id && job.status === "PENDING") { context.onStatus?.("发现相同条件的未完成报表，继续轮询原 Report ID"); return pollReport(client, job, context); }
-  const created = await client.callTool(name, args);
+  if (job.report_id && !["FAILED", "CANCELLED"].includes(job.status)) { context.onStatus?.("发现相同条件的已有报表，继续轮询原 Report ID"); return pollReport(client, job, context); }
+  if (!job.report_id && job.status === "CREATE_UNCERTAIN") throw new Error("此前相同条件的报表创建结果不确定，系统已阻止自动重建；请在报表记录中查看错误详情。");
+  let created: unknown;
+  try {
+    created = await client.callTool(name, args);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await d1().prepare(`UPDATE report_jobs SET status='CREATE_FAILED',error=?,updated_at=? WHERE id=?`).bind(message.slice(0, 1000), Date.now(), job.id).run();
+    throw error;
+  }
   const reportId = extractReportIds(created)[0];
-  if (!reportId) throw new Error("Amazon 创建报表响应没有 reportId；为避免重复创建，已终止并保留响应供排查");
+  if (!reportId) {
+    const detail = JSON.stringify(sanitizeSignedUrls(created)).slice(0, 1200);
+    await d1().prepare(`UPDATE report_jobs SET status='CREATE_UNCERTAIN',error=?,updated_at=? WHERE id=?`).bind(`未能从创建响应提取 reportId：${detail}`, Date.now(), job.id).run();
+    throw new Error("Amazon 已返回创建响应，但服务端未能识别 reportId。为避免重复创建，本次不会自动重发；错误详情已保存。");
+  }
   job = await upsertJob(context, name, requestFingerprint, args, reportId);
   return pollReport(client, job, context);
 }

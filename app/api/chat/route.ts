@@ -89,7 +89,7 @@ export async function POST(request: Request) {
         let assistant = "";
         try {
           controller.enqueue(sse("status", { stage: "analyzing", text: activeSkill ? `正在载入 Skill：${activeSkill.name}` : prepared.rows.length ? `正在读取 ${prepared.rows.length} 个附件并匹配 Amazon Ads 操作手册` : "正在匹配 Amazon Ads 操作手册与实时 MCP Schema" }));
-          const plan = await planAgent(user.id, accountId, contextualContent, text => controller.enqueue(sse("status", { stage: "agent", text })), activeSkill);
+          const plan = await planAgent(user.id, accountId, contextualContent, text => controller.enqueue(sse("status", { stage: "agent", text })), activeSkill, prepared.rows.length ? undefined : message.trim());
           if (plan.type === "approval") {
             controller.enqueue(sse("approval", { id: plan.id, summary: plan.summary, toolName: plan.toolName, args: plan.args }));
             assistant = plan.summary;
@@ -100,7 +100,12 @@ export async function POST(request: Request) {
           await d1().prepare(`INSERT INTO messages(id,conversation_id,role,content,created_at) VALUES(?,?,?,?,?)`).bind(crypto.randomUUID(), convo, "assistant", assistant || "已生成审批计划", Date.now()).run();
           controller.enqueue(sse("done", { conversationId: convo, modelRounds: plan.modelRounds }));
         } catch (error) {
-          controller.enqueue(sse("error", { message: error instanceof Error ? error.message : "执行失败" }));
+          const errorMessage = error instanceof Error ? error.message : "执行失败";
+          console.error("chat_execution_failed", { userId: user.id, accountId: accountId ?? null, conversationId: convo, error: errorMessage.slice(0, 1500) });
+          try {
+            await d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), user.id, accountId ?? null, "chat.failed", convo, errorMessage.slice(0, 1500), "failure", Date.now()).run();
+          } catch { /* Do not mask the original failure. */ }
+          controller.enqueue(sse("error", { message: errorMessage }));
         } finally {
           controller.close();
         }

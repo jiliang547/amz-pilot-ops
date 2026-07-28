@@ -85,3 +85,20 @@ test("uploads account-isolated custom Skills and applies only the selected Skill
   assert.match(model, /skillSystemBlock\(skill\)/);
   assert.match(schema, /customSkills/);
 });
+test("routes standard metric reports through backend aggregation without model tokens", async () => {
+  const [fast, agent, report, chat] = await Promise.all([
+    source("lib/fast-report.ts"),
+    source("lib/agent.ts"),
+    source("lib/report-jobs.ts"),
+    source("app/api/chat/route.ts"),
+  ]);
+  assert.match(fast, /isFastAggregateReport/);
+  assert.match(fast, /reporting-create_campaign_report/);
+  assert.match(fast, /modelRounds: 0/);
+  assert.match(fast, /没有调用大模型/);
+  assert.match(agent, /compactReportForModel/);
+  assert.doesNotMatch(report, /csvPreview:/);
+  assert.match(report, /item\.matchAll/);
+  assert.match(report, /CREATE_UNCERTAIN/);
+  assert.match(chat, /chat_execution_failed/);
+});

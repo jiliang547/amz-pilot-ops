@@ -22,7 +22,7 @@ export const AMAZON_ADS_PLAYBOOK = `
 - 已验证并应完整提供给模型的能力：账户查询；Campaign、Ad Group、Product Ad、Target/Keyword 的查询；Campaign、Ad Group、Product Ad、正向/否定 Target 的创建；Campaign、Ad Group、Product Ad、Target 状态和 Bid 的更新；Target 归档；Campaign、Search Terms、Product Ad 报表；已知 Portfolio ID 反查 Campaign 和关联 Portfolio。
 - 不得根据用户问题关键词删减上述工具。每轮都以实时 tools/list 的完整 inputSchema 为准；查询轮数不设硬上限，直到取得足够的真实数据或 Amazon 返回明确失败。
 【报表】
-- Campaign、Search Terms、Product Ad 报表是异步任务：创建一次后轮询同一个 reportId，状态 PENDING → COMPLETED，不要重复创建。服务端会下载完成后的 CSV 并提供完整 CSV 的 aggregates 汇总，金额回答必须使用 aggregates，而不是只看 csvPreview。
+- Campaign、Search Terms、Product Ad 报表是异步任务：创建一次后轮询同一个 reportId，状态 PENDING → COMPLETED，不要重复创建。服务端会下载完成后的 CSV 并提供完整 CSV 的 aggregates 汇总，金额回答必须使用 aggregates；不要把 CSV 正文发送给模型。
 - 查询“今天总花费”时，先用 ads_accounts 返回的广告账户时区确定当日日期，再把该日期同时作为 startDate 和 endDate 创建 Campaign 报表，轮询同一 reportId，最后汇总完整 CSV 的 metric.totalCost；明确提示今天数据可能尚未完全归因。
 - 报表下载地址是短期签名 URL，不得在回答或日志中泄露。
 - NA/EU/FE 是 API 区域组，不是具体站点。每次运行先用 ads_accounts-list_ads_accounts 核对 Profile 对应的 marketplace/country、currency 和 timezone；站点已在账户上下文中确定时不要再次询问用户。
