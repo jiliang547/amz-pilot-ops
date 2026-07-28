@@ -1,4 +1,4 @@
-﻿export type AmazonAccountMetadata = {
+export type AmazonAccountMetadata = {
   advertiserAccountId?: string;
   name?: string;
   marketplace?: string;
@@ -73,5 +73,5 @@ export function discoverAccountMetadata(result: unknown, profileId: string): Ama
 
 export function accountContextBlock(row: Record<string, unknown>): string {
   const marketplace = String(row.marketplace ?? "").toUpperCase();
-  return `\n【本次连接的权威账户上下文】\n- 店铺：${String(row.name ?? "未命名")}\n- Amazon API 区域组：${String(row.region ?? "未知").toUpperCase()}（区域组不是站点）\n- 站点/国家：${marketplace || "尚未识别"}\n- Profile ID：${String(row.profile_id ?? "未知")}\n- Advertiser Account ID：${String(row.advertiser_account_id ?? "尚未识别")}\n- 广告账户时区：${String(row.timezone ?? "尚未识别")}\n- 币种：${String(row.currency ?? "尚未识别")}\n把以上信息作为本次会话的默认值。站点已识别时不得再次询问用户；工具需要 countries/marketplaces 时使用该站点。用户说“今天”时必须使用广告账户时区。`;
+  return `\n【本次连接的权威账户上下文】\n- 服务器内部账户 ID：${String(row.id ?? "未知")}（由前端选择且后端已鉴权）\n- 店铺：${String(row.name ?? "未命名")}\n- Amazon API 区域组：${String(row.region ?? "未知").toUpperCase()}（区域组不是站点）\n- 站点/国家：${marketplace || "尚未识别"}\n- Profile ID：${String(row.profile_id ?? "未知")}\n- Advertiser Account ID：${String(row.advertiser_account_id ?? "尚未识别")}\n- 广告账户时区：${String(row.timezone ?? "尚未识别")}\n- 币种：${String(row.currency ?? "尚未识别")}\n前端选择的账户和以上字段是本次会话的权威默认值。绝不能要求用户再次提供 accountId、marketplace、Profile ID、账户、店铺或站点；工具需要 countries/marketplaces 时使用该站点。用户说“今天”时必须使用广告账户时区。`;
 }

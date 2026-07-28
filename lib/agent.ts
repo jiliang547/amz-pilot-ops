@@ -24,6 +24,18 @@ function tryLocalConversation(message?: string) {
   return undefined;
 }
 
+function asksForKnownAccount(content: string): boolean {
+  return /(请|需要|告诉|提供|选择|确认).{0,24}(account\s*id|accountid|marketplace|profile\s*id|账户|账号|店铺|站点)/i.test(content);
+}
+
+function selectedAccountClarification(row: Record<string, unknown>): string {
+  const name = String(row.name ?? "当前店铺");
+  const marketplace = String(row.marketplace ?? "").toUpperCase();
+  const profileId = String(row.profile_id ?? "");
+  const details = [marketplace && `${marketplace} 站点`, profileId && `Profile ${profileId}`].filter(Boolean).join("，");
+  return `当前已使用你在页面选择的店铺「${name}」${details ? `（${details}）` : ""}，无需再提供 accountId 或 marketplace。请告诉我还缺少的查询对象、指标或日期范围。`;
+}
+
 function parseArgs(call: ToolCall): Record<string, unknown> {
   try { return JSON.parse(call.function.arguments || "{}"); }
   catch { throw new Error(`模型为 ${call.function.name} 生成的工具参数不是有效 JSON`); }
@@ -115,8 +127,9 @@ export async function planAgent(
       : `正在基于第 ${round - 1} 轮真实查询结果继续分析`);
     const decision = await decide(userId, messages, tools, skill, accountContextBlock(row));
     if (!decision.toolCalls.length) {
-      const content = decision.content.trim();
+      let content = decision.content.trim();
       if (!content) throw new Error("模型没有返回回答或工具调用");
+      if (asksForKnownAccount(content)) content = selectedAccountClarification(row);
       return { type: "answer" as const, content, accountId: row.id, modelRounds: round };
     }
 

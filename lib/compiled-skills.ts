@@ -35,9 +35,11 @@ campaign_report；search_terms_report；product_ad_report；retrieve_report；cl
 字段仅可使用：campaignId,campaignName,portfolioId,adGroupId,adGroupName,adId,targetId,name,state,budget,bid,bidStrategy,topOfSearch,restOfSearch,productPage,amazonBusiness,sku,asin,keyword,matchType,negative,startDate,endDate,reportId,question。
 规则：ID 保持字符串；暂停=PAUSED，启用=ENABLED；Fixed bids=MANUAL，动态只降低=SALES_DOWN_ONLY，动态提高和降低=SALES_UP_AND_DOWN；否定关键词 negative=true 且不输出 bid；删除/归档关键词=delete_target；修改关键词竞价=update_target_bid；Product Ad 使用 SKU 或 ASIN；信息不足则 operation=clarify 并给 question。只输出一个 JSON 对象。`;
 
-const OPERATIONAL = /amazon|广告|campaign|活动|ad\s*group|广告组|product\s*ad|商品广告|target|keyword|关键词|竞价|bid|预算|portfolio|报表|花费|销售额|搜索词/i;
+const OPERATIONAL = /amazon|广告|campaign|活动|ad\s*group|广告组|product\s*ad|商品广告|target|keyword|关键词|竞价|bid|预算|portfolio|报表|花费|销售额|搜索词|数据|表现/i;
 const ACTION = /查|看|列出|创建|新建|添加|修改|更新|调整|暂停|启用|归档|删除|报表|哪个|哪一个|最高|最低|最多|最少|排名|排行|top|report|query|create|update|pause|enable|archive|delete/i;
 const STRATEGY = /为什么|原因|诊断|分析|优化建议|策略|趋势|对比|怎么提升|如何改善|浪费|异常/i;
+const VAGUE_QUERY = /^(?:请)?(?:帮我)?(?:查|查询|查看|看看|查一下|查询一下)(?:数据|广告数据|账户数据|店铺数据)?[。.!！?？]*$/i;
+const KNOWN_ACCOUNT_QUESTION = /account\s*id|accountid|marketplace|profile\s*id|账户|账号|店铺|站点/i;
 export const COMPILED_SKILL_TOOLS = [
   "ads_accounts-list_ads_accounts",
   "campaign_management-query_campaign", "campaign_management-query_ad_group", "campaign_management-query_ad", "campaign_management-query_target", "campaign_management-query_portfolio",
@@ -85,7 +87,19 @@ function deterministicPlan(message: string): SkillPlan | null {
 }
 
 export function shouldUseCompiledSkill(message: string): boolean {
-  return OPERATIONAL.test(message) && ACTION.test(message) && !STRATEGY.test(message);
+  return VAGUE_QUERY.test(message.trim()) || (OPERATIONAL.test(message) && ACTION.test(message) && !STRATEGY.test(message));
+}
+
+function selectedAccountClarification(row: Record<string, unknown>): string {
+  const name = String(row.name ?? "当前店铺");
+  const marketplace = String(row.marketplace ?? "").toUpperCase();
+  const profileId = String(row.profile_id ?? "");
+  const details = [marketplace && `${marketplace} 站点`, profileId && `Profile ${profileId}`].filter(Boolean).join("，");
+  return `当前已使用你在页面选择的店铺「${name}」${details ? `（${details}）` : ""}，无需再提供 accountId 或 marketplace。请告诉我想查询 Campaign、Ad Group、Product Ad、关键词/Target，还是某个日期范围的广告报表。`;
+}
+
+function safeClarification(question: string, row: Record<string, unknown>): string {
+  return KNOWN_ACCOUNT_QUESTION.test(question) ? selectedAccountClarification(row) : question;
 }
 
 function stripJsonFence(value: string): string {
@@ -139,8 +153,8 @@ async function planWithSmallModel(userId: string, message: string, row: Record<s
   const marketplace = String(row.marketplace ?? "").toUpperCase();
   const timezone = String(row.timezone ?? "UTC");
   const today = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-  const system = `你是 Amazon Ads 后端 Skill 的轻量参数编译器，不回答业务问题，不调用工具。${OPERATIONS}`;
-  const user = `账户站点=${marketplace || "未知"}；账户时区=${timezone}；当地日期=${today}。\n用户指令：${message}`;
+  const system = `你是 Amazon Ads 后端 Skill 的轻量参数编译器，不回答业务问题，不调用工具。前端已经选择账户，后端已经完成鉴权；下方账户字段是本次请求的权威默认值。绝不能要求用户再次提供 accountId、marketplace、Profile ID、账户、店铺或站点。只有查询对象、指标、日期范围或写操作参数确实缺失时才 clarify。${OPERATIONS}`;
+  const user = `已选择账户：internalAccountId=${String(row.id ?? "")}；name=${String(row.name ?? "")}；region=${String(row.region ?? "").toUpperCase()}；marketplace=${marketplace || "未知"}；profileId=${String(row.profile_id ?? "")}；advertiserAccountId=${String(row.advertiser_account_id ?? "")}；timezone=${timezone}；currency=${String(row.currency ?? "")}；当地日期=${today}。\n用户指令：${message}`;
   const body = JSON.stringify({ model: config.modelName, messages: [{ role: "system", content: system }, { role: "user", content: user }], stream: true, temperature: 0, max_tokens: 700 });
   console.info("compiled_skill_planner_metrics", { model: config.modelName, requestChars: body.length, catalogChars: OPERATIONS.length, messageChars: message.length });
   const response = await fetch(modelEndpoint(config), { method: "POST", headers: modelHeaders(config), body });
@@ -333,11 +347,14 @@ function preflightFor(name: string, plan: SkillPlan): { name: string; args: Reco
 export async function tryCompiledSkill(options: { userId: string; accountId: string; message: string; row: Record<string, unknown>; credentials: AmazonCredentials; onStatus?: (text: string) => void }): Promise<CompiledSkillResult | null> {
   const { userId, accountId, message, row, credentials, onStatus } = options;
   if (!shouldUseCompiledSkill(message)) return null;
+  if (VAGUE_QUERY.test(message.trim())) {
+    return { type: "answer", content: selectedAccountClarification(row), accountId, modelRounds: 0, compiledSkill: true };
+  }
   onStatus?.("正在使用轻量 Skill 编译器提取操作与参数（不发送 MCP Schema 或操作手册）");
   const localPlan = deterministicPlan(message);
   const plan = localPlan ?? await planWithSmallModel(userId, message, row);
   const built = buildToolCall(plan, row);
-  if ("clarify" in built) return { type: "answer", content: built.clarify, accountId, modelRounds: localPlan ? 0 : 1, compiledSkill: true };
+  if ("clarify" in built) return { type: "answer", content: safeClarification(built.clarify, row), accountId, modelRounds: localPlan ? 0 : 1, compiledSkill: true };
   const { name, args } = built;
   const fixed = new AmazonMcpClient(credentials, "FIXED");
   const live: McpTool[] = await cachedTools(fixed);
