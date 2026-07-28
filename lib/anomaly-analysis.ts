@@ -154,14 +154,14 @@ async function analyzeKind(userId: string, accountId: string, analysisDate: stri
     onStatus?.(`正在用 ${config.modelName} 分析近15天${LABELS[kind]}异常`);
     const rows = await analysisRows(userId, accountId, kind, startDate, endDate);
     if (!rows.length) throw new Error(`${LABELS[kind]}近15天没有可分析的数据`);
-    const system = `你是亚马逊广告数据分析师。只分析提供的近15天数据，找出有业务意义的异常对象并解释原因。不要把正常波动当异常，不要臆造数据。重点关注花费突增、转化骤降、高花费零订单、ACOS恶化、曝光或点击异常变化。必须只返回JSON：{"summary":"总体结论","anomalies":[{"objectName":"异常对象","objectId":"对象ID","severity":"high|medium|low","anomaly":"异常现象","reason":"异常原因","evidence":"关键数据证据"}]}。没有异常时 anomalies 返回空数组。`;
+    const system = `你是亚马逊广告数据分析师。只分析提供的近15天数据，找出有业务意义的异常对象并解释原因。不要把正常波动当异常，不要臆造数据。重点关注花费突增、转化骤降、高花费零订单、ACOS恶化、曝光或点击异常变化。必须只返回一个完整JSON对象：{"summary":"总体结论","anomalies":[{"objectName":"异常对象","objectId":"对象ID","severity":"high|medium|low","anomaly":"异常现象","reason":"异常原因","evidence":"关键数据证据"}]}。最多返回8个最重要的异常；summary不超过150字，每个anomaly、reason、evidence分别不超过80、180、120字。不要输出Markdown、思考过程或JSON之外的文字。没有异常时anomalies返回空数组。`;
     const response = await fetch(modelEndpoint(config), {
       method: "POST",
       headers: modelHeaders(config),
       body: JSON.stringify({
         model: config.modelName,
         messages: [{ role: "system", content: system }, { role: "user", content: `${prompt}\n日期范围：${startDate} 至 ${endDate}\n报告数据：${JSON.stringify(rows)}` }],
-        stream: false, temperature: 0.1, max_tokens: 2400, response_format: { type: "json_object" },
+        stream: false, temperature: 0.1, max_tokens: 4000, response_format: { type: "json_object" },
       }),
     });
     if (!response.ok) throw new Error(`模型分析失败 (${response.status}): ${(await response.text()).slice(0, 240)}`);
