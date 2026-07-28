@@ -2,6 +2,7 @@ import { accountCredentials } from "./accounts";
 import { AmazonAdsApiClient, executeDirectReport, type AmazonAdsReportKind } from "./amazon-ads-api";
 import type { AmazonCredentials } from "./amazon-mcp";
 import { appEnv, d1 } from "./db";
+import { runAnomalyAnalysis } from "./anomaly-analysis";
 
 type WindowKey = "1d" | "7d" | "30d" | "90d";
 type Metrics = Record<string, number>;
@@ -83,11 +84,11 @@ async function cleanupOldRawReports(userId: string, accountId: string) {
 }
 
 type KindSyncResult = { reportKind: AmazonAdsReportKind; syncDate: string; mode: "initial" | "rolling"; startDate: string; endDate: string; status: string; reportId?: string; rowsUpserted?: number; error?: string };
-async function runReportKindSync(row: Record<string, unknown>, credentials: AmazonCredentials, client: AmazonAdsApiClient, kind: AmazonAdsReportKind, force: boolean, onStatus?: (text: string) => void, timeoutMs = 60 * 60_000): Promise<KindSyncResult> {
+async function runReportKindSync(row: Record<string, unknown>, credentials: AmazonCredentials, client: AmazonAdsApiClient, kind: AmazonAdsReportKind, force: boolean, onStatus?: (text: string) => void, timeoutMs = 60 * 60_000, forceInitial = false): Promise<KindSyncResult> {
   const userId = String(row.user_id), accountId = String(row.id), syncDate = localParts(String(row.timezone ?? "UTC")).date, endDate = shiftDate(syncDate, -1), initialStart = shiftDate(endDate, -89), table = FACT_TABLES[kind];
   const coverage = await d1().prepare(`SELECT MIN(report_date) minDate,COUNT(*) rowCount FROM ${table} WHERE user_id=? AND account_id=?`).bind(userId, accountId).first<{ minDate?: string; rowCount: number }>();
   const completedInitial = await d1().prepare(`SELECT id FROM ad_report_syncs WHERE user_id=? AND account_id=? AND report_kind=? AND mode='initial' AND status='COMPLETED' LIMIT 1`).bind(userId, accountId, kind).first<{ id: string }>();
-  const initial = !completedInitial && (!coverage?.rowCount || !coverage.minDate || coverage.minDate > initialStart), mode: "initial" | "rolling" = initial ? "initial" : "rolling", startDate = initial ? initialStart : shiftDate(endDate, -(ROLLING_ATTRIBUTION_DAYS - 1)), now = Date.now();
+  const initial = forceInitial || (!completedInitial && (!coverage?.rowCount || !coverage.minDate || coverage.minDate > initialStart)), mode: "initial" | "rolling" = initial ? "initial" : "rolling", startDate = initial ? initialStart : shiftDate(endDate, -(ROLLING_ATTRIBUTION_DAYS - 1)), now = Date.now();
   let sync = await d1().prepare(`SELECT id,status,updated_at updatedAt,report_id reportId,rows_upserted rowsUpserted FROM ad_report_syncs WHERE account_id=? AND sync_date=? AND report_kind=?`).bind(accountId, syncDate, kind).first<{ id: string; status: string; updatedAt: number; reportId?: string; rowsUpserted?: number }>();
   if (!force && sync?.status === "COMPLETED") return { reportKind: kind, syncDate, mode, startDate, endDate, status: "COMPLETED", reportId: sync.reportId, rowsUpserted: sync.rowsUpserted };
   if (!force && sync?.status === "RUNNING" && now - sync.updatedAt < 65 * 60_000) return { reportKind: kind, syncDate, mode, startDate, endDate, status: "RUNNING" };
@@ -117,23 +118,33 @@ export async function runDailyReportSnapshots(): Promise<number> {
   const accounts = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts ORDER BY updated_at`).all<Record<string, unknown>>();
   for (const row of accounts.results) {
     const local = localParts(String(row.timezone ?? "UTC")); if (local.hour === 0 && local.minute < 15) continue;
+    const analyzeIfReady = async () => {
+      const ready = await d1().prepare(`SELECT COUNT(DISTINCT report_kind) count FROM ad_report_syncs WHERE account_id=? AND sync_date=? AND status='COMPLETED'`).bind(row.id, local.date).first<{ count: number }>();
+      if (Number(ready?.count ?? 0) !== REPORT_KINDS.length) return false;
+      const analyzed = await d1().prepare(`SELECT COUNT(DISTINCT report_kind) count FROM ad_anomaly_analyses WHERE account_id=? AND analysis_date=? AND status='COMPLETED'`).bind(row.id, local.date).first<{ count: number }>();
+      if (Number(analyzed?.count ?? 0) === REPORT_KINDS.length) return false;
+      await runAnomalyAnalysis(String(row.user_id), String(row.id));
+      return true;
+    };
     for (const kind of REPORT_KINDS) {
       const sync = await d1().prepare(`SELECT status,updated_at updatedAt FROM ad_report_syncs WHERE account_id=? AND sync_date=? AND report_kind=?`).bind(row.id, local.date, kind).first<{ status: string; updatedAt: number }>();
       if (sync?.status === "COMPLETED" || (sync?.status === "RUNNING" && Date.now() - sync.updatedAt < 65 * 60_000) || (sync?.status === "FAILED" && Date.now() - sync.updatedAt < 15 * 60_000)) continue;
       const { credentials } = await accountCredentials(String(row.user_id), String(row.id));
       const result = await runReportKindSync(row, credentials, new AmazonAdsApiClient(credentials), kind, false); return result.status === "COMPLETED" ? 1 : 0;
     }
+    if (await analyzeIfReady()) return 1;
   }
   return 0;
 }
 
-export async function runManualReportSnapshots(userId: string, accountId: string, onStatus?: (text: string) => void) {
+export async function runManualReportSnapshots(userId: string, accountId: string, onStatus?: (text: string) => void, options: { forceInitial?: boolean } = {}) {
   const row = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>(); if (!row) throw new Error("店铺不存在");
   const { credentials } = await accountCredentials(userId, accountId), client = new AmazonAdsApiClient(credentials), deadline = Date.now() + 60 * 60_000, reports: KindSyncResult[] = [];
   onStatus?.("开始同步 Campaign、投放关键词、客户搜索词三类每日数据；首次回填会自动分段，整体最长等待 1 小时");
-  for (const kind of REPORT_KINDS) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { reports.push({ reportKind: kind, syncDate: localParts(String(row.timezone ?? "UTC")).date, mode: "rolling", startDate: "", endDate: "", status: "FAILED", error: "三类数据整体等待已达到1小时" }); continue; } reports.push(await runReportKindSync(row, credentials, client, kind, true, onStatus, remainingMs)); }
-  if (reports.every(item => item.status === "COMPLETED")) { await d1().prepare(`DELETE FROM report_snapshots WHERE account_id=?`).bind(accountId).run(); await cleanupOldRawReports(userId, accountId); }
-  return { syncDate: localParts(String(row.timezone ?? "UTC")).date, status: reports.every(item => item.status === "COMPLETED") ? "COMPLETED" : "FAILED", reports, windows: reports.map(item => ({ windowKey: item.reportKind, status: item.status, error: item.error })) };
+  for (const kind of REPORT_KINDS) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { reports.push({ reportKind: kind, syncDate: localParts(String(row.timezone ?? "UTC")).date, mode: "rolling", startDate: "", endDate: "", status: "FAILED", error: "三类数据整体等待已达到1小时" }); continue; } reports.push(await runReportKindSync(row, credentials, client, kind, true, onStatus, remainingMs, Boolean(options.forceInitial))); }
+  const completed = reports.every(item => item.status === "COMPLETED"), analysis = completed ? await runAnomalyAnalysis(userId, accountId, { force: true, onStatus }) : null;
+  if (completed) { await d1().prepare(`DELETE FROM report_snapshots WHERE account_id=?`).bind(accountId).run(); await cleanupOldRawReports(userId, accountId); }
+  return { syncDate: localParts(String(row.timezone ?? "UTC")).date, status: completed ? "COMPLETED" : "FAILED", reports, analysis, windows: reports.map(item => ({ windowKey: item.reportKind, status: item.status, error: item.error })) };
 }
 
 async function aggregateCampaignWindow(userId: string, accountId: string, startDate: string, endDate: string): Promise<SnapshotPayload> {
