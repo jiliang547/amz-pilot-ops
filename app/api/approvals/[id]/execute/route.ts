@@ -1,2 +1,43 @@
-import { assertSameOrigin,requireUser } from "@/lib/auth";import { accountCredentials } from "@/lib/accounts";import { d1 } from "@/lib/db";import { AmazonMcpClient,isWriteTool } from "@/lib/amazon-mcp";
-export async function POST(request:Request,context:{params:Promise<{id:string}>}){try{assertSameOrigin(request);const user=await requireUser(request);if(user.mustChangePassword)return Response.json({error:"请先修改初始密码"},{status:428});const {id}=await context.params;const row=await d1().prepare(`SELECT * FROM approvals WHERE id=? AND user_id=?`).bind(id,user.id).first<any>();if(!row)return Response.json({error:"审批不存在"},{status:404});if(row.status!=="pending")return Response.json({error:"该审批已处理"},{status:409});if(!isWriteTool(row.tool_name))return Response.json({error:"审批工具类型异常"},{status:400});const claimed=await d1().prepare(`UPDATE approvals SET status='executing' WHERE id=? AND status='pending'`).bind(id).run();if(!claimed.meta.changes)return Response.json({error:"审批正在被处理"},{status:409});try{const {credentials}=await accountCredentials(user.id,row.account_id);const client=new AmazonMcpClient(credentials,"FIXED");const live=await client.listTools();if(!live.some(t=>t.name===row.tool_name))throw new Error("目标工具已不在实时 MCP Schema 中");const result=await new AmazonMcpClient(credentials).callTool(row.tool_name,JSON.parse(row.tool_args));const serialized=JSON.stringify(result).slice(0,100000);const partial=/partialSuccess/i.test(serialized);await d1().batch([d1().prepare(`UPDATE approvals SET status=?,result=?,executed_at=? WHERE id=?`).bind(partial?"partial":"executed",serialized,Date.now(),id),d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),user.id,row.account_id,"tool.write",row.tool_name,row.tool_args.slice(0,12000),partial?"partial":"success",Date.now())]);return Response.json({ok:true,partial,result});}catch(error){await d1().prepare(`UPDATE approvals SET status='failed',result=?,executed_at=? WHERE id=?`).bind(JSON.stringify({error:error instanceof Error?error.message:"failed"}),Date.now(),id).run();throw error;}}catch(e){if(e instanceof Response)return e;return Response.json({error:e instanceof Error?e.message:"执行失败"},{status:400});}}
+import { assertSameOrigin, requireUser } from "@/lib/auth";
+import { accountCredentials } from "@/lib/accounts";
+import { d1 } from "@/lib/db";
+import { AmazonMcpClient, isWriteTool } from "@/lib/amazon-mcp";
+import { verifyWrite } from "@/lib/write-verification";
+
+export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  try {
+    assertSameOrigin(request);
+    const user = await requireUser(request);
+    if (user.mustChangePassword) return Response.json({ error: "请先修改初始密码" }, { status: 428 });
+    const { id } = await context.params;
+    const row = await d1().prepare(`SELECT * FROM approvals WHERE id=? AND user_id=?`).bind(id, user.id).first<any>();
+    if (!row) return Response.json({ error: "审批不存在" }, { status: 404 });
+    if (row.status !== "pending") return Response.json({ error: "该审批已处理" }, { status: 409 });
+    if (!isWriteTool(row.tool_name)) return Response.json({ error: "审批工具类型异常" }, { status: 400 });
+    const claimed = await d1().prepare(`UPDATE approvals SET status='executing' WHERE id=? AND status='pending'`).bind(id).run();
+    if (!claimed.meta.changes) return Response.json({ error: "审批正在被处理" }, { status: 409 });
+    try {
+      const { credentials } = await accountCredentials(user.id, row.account_id);
+      const schemaClient = new AmazonMcpClient(credentials, "FIXED");
+      const live = await schemaClient.listTools();
+      if (!live.some(tool => tool.name === row.tool_name)) throw new Error("目标工具已不在实时 MCP Schema 中");
+      const args = JSON.parse(row.tool_args) as Record<string, unknown>;
+      const writeResult = await new AmazonMcpClient(credentials).callTool(row.tool_name, args);
+      const writeSerialized = JSON.stringify(writeResult);
+      const partial = /partialSuccess/i.test(writeSerialized);
+      const verification = partial ? null : await verifyWrite(credentials, row.tool_name, args, writeResult);
+      const storedResult = JSON.stringify({ writeResult, verification }).slice(0, 100000);
+      await d1().batch([
+        d1().prepare(`UPDATE approvals SET status=?,result=?,executed_at=? WHERE id=?`).bind(partial ? "partial" : "executed", storedResult, Date.now(), id),
+        d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), user.id, row.account_id, "tool.write", row.tool_name, row.tool_args.slice(0, 12000), partial ? "partial" : "success", Date.now()),
+      ]);
+      return Response.json({ ok: true, partial, result: writeResult, verification });
+    } catch (error) {
+      await d1().prepare(`UPDATE approvals SET status='failed',result=?,executed_at=? WHERE id=?`).bind(JSON.stringify({ error: error instanceof Error ? error.message : "failed" }), Date.now(), id).run();
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof Response) return error;
+    return Response.json({ error: error instanceof Error ? error.message : "执行失败" }, { status: 400 });
+  }
+}

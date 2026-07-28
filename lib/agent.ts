@@ -5,6 +5,7 @@ import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./ama
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
 import { executeReportTool } from "./report-jobs";
 import { tryFastAggregateReport } from "./fast-report";
+import { tryCompiledSkill } from "./compiled-skills";
 import type { ActiveSkill } from "./custom-skills";
 function tryLocalConversation(message?: string) {
   if (!message) return undefined;
@@ -94,6 +95,8 @@ export async function planAgent(
   if (!skill && plainMessage) {
     const fast = await tryFastAggregateReport({ userId, message: plainMessage, row, credentials, onStatus });
     if (fast) return fast;
+    const compiled = await tryCompiledSkill({ userId, accountId: String(row.id), message: plainMessage, row, credentials, onStatus });
+    if (compiled) return compiled;
   }
 
   const live = await fixedClient.listTools();

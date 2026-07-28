@@ -113,3 +113,26 @@ test("greetings stay local and model cache prefix is stable within a day", async
   assert.doesNotMatch(model, /当前服务器 UTC 时间：\$\{new Date\(\)\.toISOString\(\)\}/);
   assert.match(model, /model_request_metrics/);
 });
+test("compiles all verified Amazon MCP tools into low-token backend skills", async () => {
+  const [compiled, agent, page, approval, verification, scheduler] = await Promise.all([
+    source("lib/compiled-skills.ts"),
+    source("lib/agent.ts"),
+    source("app/page.tsx"),
+  ]);
+  const tools = [
+    "ads_accounts-list_ads_accounts",
+    "campaign_management-query_campaign", "campaign_management-query_ad_group", "campaign_management-query_ad", "campaign_management-query_target", "campaign_management-query_portfolio",
+    "campaign_management-create_campaign", "campaign_management-create_ad_group", "campaign_management-create_ad", "campaign_management-create_target",
+    "campaign_management-update_campaign", "campaign_management-update_ad_group", "campaign_management-update_ad", "campaign_management-update_target", "campaign_management-update_target_bid", "campaign_management-delete_target",
+    "reporting-create_campaign_report", "reporting-create_report", "reporting-retrieve_report",
+  ];
+  for (const tool of tools) assert.match(compiled, new RegExp(tool));
+  assert.match(compiled, /deterministicPlan/);
+  assert.match(compiled, /compiled_skill_planner_metrics/);
+  assert.match(compiled, /cachedTools/);
+  assert.doesNotMatch(compiled, /AMAZON_ADS_PLAYBOOK|tool\.inputSchema/);
+  assert.match(compiled, /INSERT INTO approvals/);
+  assert.match(compiled, /executeReportTool/);
+  assert.match(agent, /tryCompiledSkill/);
+  assert.match(page, /内置后端 Skill · 低 Token/);
+});
