@@ -161,13 +161,14 @@ async function analyzeKind(userId: string, accountId: string, analysisDate: stri
       body: JSON.stringify({
         model: config.modelName,
         messages: [{ role: "system", content: system }, { role: "user", content: `${prompt}\n日期范围：${startDate} 至 ${endDate}\n报告数据：${JSON.stringify(rows)}` }],
-        stream: false, temperature: 0.1, max_tokens: 2400,
+        stream: false, temperature: 0.1, max_tokens: 2400, response_format: { type: "json_object" },
       }),
     });
     if (!response.ok) throw new Error(`模型分析失败 (${response.status}): ${(await response.text()).slice(0, 240)}`);
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string | null } }> };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    const parsed = parseModelJson(content);
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null } }> };
+    const message = data.choices?.[0]?.message, content = message?.content || message?.reasoning_content || "";
+    let parsed: { summary: string; anomalies: StoredAnomaly[] };
+    try { parsed = parseModelJson(content); } catch { parsed = { summary: content.slice(0, 2000) || "MiMo 分析完成，但返回了非结构化内容", anomalies: [{ objectName: `${LABELS[kind]}整体`, severity: "medium", anomaly: "模型返回非结构化异常结论", reason: content.slice(0, 1200) || "模型未返回可解析内容", evidence: "已保存原始模型响应，后续分析会继续要求结构化 JSON" }] }; }
     await d1().prepare(`UPDATE ad_anomaly_analyses SET status='COMPLETED',summary=?,anomalies_json=?,raw_response=?,error=NULL,completed_at=?,updated_at=? WHERE id=?`).bind(parsed.summary, JSON.stringify(parsed.anomalies), content.slice(0, 50000), Date.now(), Date.now(), id).run();
     return { reportKind: kind, status: "COMPLETED", modelName: config.modelName, ...parsed, reused: false };
   } catch (error) {
