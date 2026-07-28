@@ -62,14 +62,14 @@ async function parseStreamingReply(response: Response): Promise<ModelReply> {
   return { content, toolCalls: [...calls.values()].filter(call => call.function.name) };
 }
 
-export async function decide(userId: string, messages: AgentMessage[], tools: McpTool[], skill?: ActiveSkill): Promise<ModelReply> {
+export async function decide(userId: string, messages: AgentMessage[], tools: McpTool[], skill?: ActiveSkill, accountContext = ""): Promise<ModelReply> {
   const config = await modelConfigForUser(userId);
   const response = await fetch(modelEndpoint(config), {
     method: "POST",
     headers: modelHeaders(config),
     body: JSON.stringify({
       model: config.modelName,
-      messages: [{ role: "system", content: `${SYSTEM}${skillSystemBlock(skill)}\n当前服务器 UTC 时间：${new Date().toISOString()}。用户说“今天”时，优先根据 ads_accounts 返回的广告账户时区确定报表日期。` }, ...messages],
+      messages: [{ role: "system", content: `${SYSTEM}${skillSystemBlock(skill)}${accountContext}\n当前服务器 UTC 时间：${new Date().toISOString()}。用户说“今天”时，优先根据 ads_accounts 返回的广告账户时区确定报表日期。` }, ...messages],
       tools: tools.length ? toolDefs(tools) : undefined,
       tool_choice: tools.length ? "auto" : undefined,
       stream: true,

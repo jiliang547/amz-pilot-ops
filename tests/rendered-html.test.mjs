@@ -43,7 +43,7 @@ test("uses the full streaming MCP agent loop and completes asynchronous reports"
     source("app/api/chat/route.ts"),
     source("lib/amazon-mcp.ts"),
     source("lib/amazon-playbook.ts"),
-    source("lib/report-result.ts"),
+    source("lib/report-jobs.ts"),
   ]);
   assert.match(model, /stream:\s*true/);
   assert.doesNotMatch(model, /compactSchema|streamAnswer/);
@@ -51,8 +51,9 @@ test("uses the full streaming MCP agent loop and completes asynchronous reports"
   assert.match(agent, /while \(true\)/);
   assert.doesNotMatch(agent, /step < 4|slice\(0, 3\)|selectToolsForMessage/);
   assert.match(agent, /messages\.push\(\{ role: "tool"/);
-  assert.match(agent, /reportIsPending/);
-  assert.match(agent, /enrichReportResult/);
+  assert.match(agent, /executeReportTool/);
+  assert.match(report, /POLL_INTERVAL_MS = 15_000/);
+  assert.match(report, /report_jobs/);
   assert.match(route, /planAgent\(user\.id/);
   assert.doesNotMatch(route, /finalMessages|streamAnswer/);
   assert.match(amazon, /campaign_management-query_portfolio/);

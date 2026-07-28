@@ -25,6 +25,11 @@ export const AMAZON_ADS_PLAYBOOK = `
 - Campaign、Search Terms、Product Ad 报表是异步任务：创建一次后轮询同一个 reportId，状态 PENDING → COMPLETED，不要重复创建。服务端会下载完成后的 CSV 并提供完整 CSV 的 aggregates 汇总，金额回答必须使用 aggregates，而不是只看 csvPreview。
 - 查询“今天总花费”时，先用 ads_accounts 返回的广告账户时区确定当日日期，再把该日期同时作为 startDate 和 endDate 创建 Campaign 报表，轮询同一 reportId，最后汇总完整 CSV 的 metric.totalCost；明确提示今天数据可能尚未完全归因。
 - 报表下载地址是短期签名 URL，不得在回答或日志中泄露。
+- NA/EU/FE 是 API 区域组，不是具体站点。每次运行先用 ads_accounts-list_ads_accounts 核对 Profile 对应的 marketplace/country、currency 和 timezone；站点已在账户上下文中确定时不要再次询问用户。
+- 报表 Worker 规则：create_report 只创建一次并立即保存 reportId；随后每 15 秒轮询同一个 reportId。PENDING/IN_PROGRESS 是正常状态，不得重建，也不得提前向用户宣布结束。必须等 COMPLETED 后立刻下载、校验、汇总；FAILED/CANCELLED 才终止。
+- 实操耗时可能超过 10 分钟（曾出现 Search Terms 37 次、50 次轮询）；后端不设置四轮或固定查询次数上限。相同条件优先恢复 PENDING 报表或复用已完成报表。
+- Search Terms 请求含 advertisedProduct.id 时同时请求 advertisedProductMarketplace.value，最好也含 ad.id。账户级 Search Terms 可能混入非 SP 数据，必须先查全部 SP campaign ID 并按 ID 过滤，不能按名称过滤。
+- target.id、targetingText.value、matchType.value、placement.value 可能不受报表 schema 支持；字段失败后不得反复重建。没有有效 placement 报表时禁止自动调整 placement。
 - Search Terms 和 Product Ad 的部分维度不支持服务端 filter，应生成账户级 CSV 后按 campaign.id、adGroup.id、ad.id、advertisedProduct.id 本地筛选。
 - ACOS = totalCost / sales × 100%；ROAS = sales / totalCost。日期范围默认使用完整自然日，不把当天未完整数据混入比较。
 - query_portfolio 在实测账户可能返回 Unauthorized；不能把 Unauthorized 解释为 0 个 Portfolio。已知 Portfolio ID 时可用 campaign portfolioIdFilter 反查或关联。
