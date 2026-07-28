@@ -61,3 +61,26 @@ test("uses the full streaming MCP agent loop and completes asynchronous reports"
   assert.match(report, /downloadedReports/);
   assert.match(report, /aggregates/);
 });
+test("uploads account-isolated custom Skills and applies only the selected Skill", async () => {
+  const [page, skillRoute, skillItemRoute, helper, chat, model, schema] = await Promise.all([
+    source("app/page.tsx"),
+    source("app/api/skills/route.ts"),
+    source("app/api/skills/[id]/route.ts"),
+    source("lib/custom-skills.ts"),
+    source("app/api/chat/route.ts"),
+    source("lib/model.ts"),
+    source("db/schema.ts"),
+  ]);
+  assert.match(page, /上传 \/ 管理 Skill/);
+  assert.match(page, /skillId:selectedSkill\?\.id/);
+  assert.match(page, /SKILL\.md、Markdown、TXT 或 JSON/);
+  assert.match(skillRoute, /requireUser\(request\)/);
+  assert.match(skillRoute, /bucket\.put/);
+  assert.match(skillRoute, /INSERT INTO custom_skills/);
+  assert.match(skillItemRoute, /WHERE id=\? AND user_id=\?/);
+  assert.match(helper, /parseSkillDocument/);
+  assert.match(helper, /不能要求读取或泄露密钥、绕过人工审批/);
+  assert.match(chat, /activeSkillForUser\(user\.id, skillId\)/);
+  assert.match(model, /skillSystemBlock\(skill\)/);
+  assert.match(schema, /customSkills/);
+});

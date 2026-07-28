@@ -22,6 +22,13 @@
       "when": 1785200038696,
       "tag": "0002_tan_kang",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1785209651081,
+      "tag": "0003_loving_bucky",
+      "breakpoints": true
     }
   ]
 }

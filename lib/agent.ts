@@ -3,6 +3,7 @@ import { accountCredentials } from "./accounts";
 import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./amazon-mcp";
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
 import { enrichReportResult, reportIsPending } from "./report-result";
+import type { ActiveSkill } from "./custom-skills";
 
 function parseArgs(call: ToolCall): Record<string, unknown> {
   try { return JSON.parse(call.function.arguments || "{}"); }
@@ -42,6 +43,7 @@ export async function planAgent(
   accountId: string | undefined,
   message: ModelContent,
   onStatus?: (text: string) => void,
+  skill?: ActiveSkill,
 ) {
   const { row, credentials } = await accountCredentials(userId, accountId);
   const fixedClient = new AmazonMcpClient(credentials, "FIXED");
@@ -58,7 +60,7 @@ export async function planAgent(
     onStatus?.(round === 1
       ? `正在按操作手册分析，并提供全部 ${tools.length} 个已验证 MCP 工具及实时 Schema`
       : `正在基于第 ${round - 1} 轮真实查询结果继续分析`);
-    const decision = await decide(userId, messages, tools);
+    const decision = await decide(userId, messages, tools, skill);
     if (!decision.toolCalls.length) {
       const content = decision.content.trim();
       if (!content) throw new Error("模型没有返回回答或工具调用");
