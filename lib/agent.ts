@@ -5,6 +5,7 @@ import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./ama
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
 import { executeReportTool } from "./report-jobs";
 import { tryFastAggregateReport } from "./fast-report";
+import { tryRankedCampaignReport } from "./ranked-report";
 import { tryCompiledSkill } from "./compiled-skills";
 import type { ActiveSkill } from "./custom-skills";
 function tryLocalConversation(message?: string) {
@@ -93,6 +94,8 @@ export async function planAgent(
   } catch { /* Saved account context is still usable. */ }
 
   if (!skill && plainMessage) {
+    const ranked = await tryRankedCampaignReport({ userId, message: plainMessage, row, credentials, onStatus });
+    if (ranked) return ranked;
     const fast = await tryFastAggregateReport({ userId, message: plainMessage, row, credentials, onStatus });
     if (fast) return fast;
     const compiled = await tryCompiledSkill({ userId, accountId: String(row.id), message: plainMessage, row, credentials, onStatus });

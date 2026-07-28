@@ -136,3 +136,22 @@ test("compiles all verified Amazon MCP tools into low-token backend skills", asy
   assert.match(agent, /tryCompiledSkill/);
   assert.match(page, /内置后端 Skill · 低 Token/);
 });
+test("routes campaign ranking questions through backend CSV grouping", async () => {
+  const [ranked, agent, reports, compiled] = await Promise.all([
+    source("lib/ranked-report.ts"),
+    source("lib/agent.ts"),
+    source("lib/report-jobs.ts"),
+    source("lib/compiled-skills.ts"),
+  ]);
+  assert.match(ranked, /昨天\|昨日\|yesterday/);
+  assert.match(ranked, /最高\|最低/);
+  assert.match(ranked, /reporting-create_campaign_report/);
+  assert.match(ranked, /mergeGroups/);
+  assert.match(ranked, /modelRounds: 0/);
+  assert.match(agent, /tryRankedCampaignReport/);
+  assert.ok(agent.indexOf("tryRankedCampaignReport") < agent.indexOf("tryFastAggregateReport({"));
+  assert.match(reports, /campaignIdIndex/);
+  assert.match(reports, /campaignNameIndex/);
+  assert.match(reports, /summary\.groups/);
+  assert.match(compiled, /哪个\|哪一个\|最高\|最低/);
+});

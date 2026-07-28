@@ -36,7 +36,7 @@ campaign_report；search_terms_report；product_ad_report；retrieve_report；cl
 规则：ID 保持字符串；暂停=PAUSED，启用=ENABLED；Fixed bids=MANUAL，动态只降低=SALES_DOWN_ONLY，动态提高和降低=SALES_UP_AND_DOWN；否定关键词 negative=true 且不输出 bid；删除/归档关键词=delete_target；修改关键词竞价=update_target_bid；Product Ad 使用 SKU 或 ASIN；信息不足则 operation=clarify 并给 question。只输出一个 JSON 对象。`;
 
 const OPERATIONAL = /amazon|广告|campaign|活动|ad\s*group|广告组|product\s*ad|商品广告|target|keyword|关键词|竞价|bid|预算|portfolio|报表|花费|销售额|搜索词/i;
-const ACTION = /查|看|列出|创建|新建|添加|修改|更新|调整|暂停|启用|归档|删除|报表|report|query|create|update|pause|enable|archive|delete/i;
+const ACTION = /查|看|列出|创建|新建|添加|修改|更新|调整|暂停|启用|归档|删除|报表|哪个|哪一个|最高|最低|最多|最少|排名|排行|top|report|query|create|update|pause|enable|archive|delete/i;
 const STRATEGY = /为什么|原因|诊断|分析|优化建议|策略|趋势|对比|怎么提升|如何改善|浪费|异常/i;
 export const COMPILED_SKILL_TOOLS = [
   "ads_accounts-list_ads_accounts",

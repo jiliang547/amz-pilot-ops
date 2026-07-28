@@ -49,9 +49,15 @@ function reportState(value: unknown): "PENDING" | "COMPLETED" | "FAILED" | "CANC
 }
 
 function reportFailure(value: unknown): string | undefined {
-  const text = JSON.stringify(value);
-  const code = text.match(/["']?failureCode["']?\s*[:=]\s*["']([^"']+)/i)?.[1];
-  const reason = text.match(/["']?failureReason["']?\s*[:=]\s*["']([^"']+)/i)?.[1];
+  let code: string | undefined, reason: string | undefined;
+  walk(value, (key, item) => {
+    if (typeof item !== "string") return;
+    const normalized = key.replace(/[_-]/g, "").toLowerCase();
+    if (normalized === "failurecode") code = item;
+    if (normalized === "failurereason") reason = item;
+    code ??= item.match(/failure[_-]?code\s*[:=]\s*["']?([^"'\n,}]+)/i)?.[1]?.trim();
+    reason ??= item.match(/failure[_-]?reason\s*[:=]\s*["']?([^"'\n,}]+)/i)?.[1]?.trim();
+  });
   return [code, reason].filter(Boolean).join(": ") || undefined;
 }
 
@@ -79,19 +85,33 @@ function parseCsvLine(line: string): string[] {
 
 function summarizeCsv(csv: string) {
   const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return { rowCount: 0, columns: [], aggregates: {} };
+  if (!lines.length) return { rowCount: 0, columns: [], aggregates: {}, groups: [] };
   const headers = parseCsvLine(lines[0]);
   const normalized = headers.map(header => header.toLowerCase().replace(/[\s_]/g, ""));
   const metrics: Record<string, string[]> = { totalCost: ["metric.totalcost", "totalcost", "spend", "cost"], sales: ["metric.sales", "sales"], clicks: ["metric.clicks", "clicks"], impressions: ["metric.impressions", "impressions"], purchases: ["metric.purchases", "purchases"], unitsSold: ["metric.unitssold", "unitssold"] };
   const indexes = Object.fromEntries(Object.entries(metrics).map(([key, names]) => [key, normalized.findIndex(header => names.some(name => header === name || header.endsWith(name)))]));
+  const campaignIdIndex = normalized.findIndex(header => ["campaign.id", "campaignid"].includes(header) || header.endsWith("campaign.id"));
+  const campaignNameIndex = normalized.findIndex(header => ["campaign.name", "campaignname"].includes(header) || header.endsWith("campaign.name"));
   const aggregates: Record<string, number> = {};
+  const groups = new Map<string, { campaignId?: string; campaignName?: string; aggregates: Record<string, number> }>();
   for (const key of Object.keys(metrics)) aggregates[key] = 0;
   for (let index = 1; index < lines.length; index++) {
     const cells = parseCsvLine(lines[index]);
-    for (const [key, column] of Object.entries(indexes)) if (column >= 0) { const numeric = Number((cells[column] ?? "").replace(/[$€£¥%\s,]/g, "")); if (Number.isFinite(numeric)) aggregates[key] += numeric; }
+    const campaignId = campaignIdIndex >= 0 ? cells[campaignIdIndex]?.trim() : undefined;
+    const campaignName = campaignNameIndex >= 0 ? cells[campaignNameIndex]?.trim() : undefined;
+    const groupKey = campaignId || campaignName;
+    const group = groupKey ? groups.get(groupKey) ?? { campaignId, campaignName, aggregates: {} } : undefined;
+    for (const [key, column] of Object.entries(indexes)) if (column >= 0) {
+      const numeric = Number((cells[column] ?? "").replace(/[$€£¥%\s,]/g, ""));
+      if (Number.isFinite(numeric)) {
+        aggregates[key] += numeric;
+        if (group) group.aggregates[key] = (group.aggregates[key] ?? 0) + numeric;
+      }
+    }
+    if (groupKey && group) groups.set(groupKey, group);
   }
   for (const key of Object.keys(aggregates)) if (indexes[key] < 0) delete aggregates[key];
-  return { rowCount: Math.max(0, lines.length - 1), columns: headers, aggregates };
+  return { rowCount: Math.max(0, lines.length - 1), columns: headers, aggregates, groups: [...groups.values()] };
 }
 
 function stable(value: unknown): string {
@@ -110,9 +130,22 @@ function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, m
 
 async function savedResult(job: JobRow): Promise<unknown | null> {
   if (job.status !== "COMPLETED") return null;
-  const files = await d1().prepare(`SELECT part_number partNumber,filename,size,row_count rowCount,summary_json summaryJson FROM report_files WHERE report_job_id=? ORDER BY part_number`).bind(job.id).all<Record<string, unknown>>();
+  const files = await d1().prepare(`SELECT part_number partNumber,filename,size,row_count rowCount,summary_json summaryJson,object_key objectKey FROM report_files WHERE report_job_id=? ORDER BY part_number`).bind(job.id).all<Record<string, unknown>>();
   if (!files.results.length) return null;
-  return { reportId: job.report_id, status: "COMPLETED", reusedSavedReport: true, downloadedReports: files.results.map(file => ({ part: file.partNumber, filename: file.filename, size: file.size, ...JSON.parse(String(file.summaryJson)) })), note: "已复用此前完成并私有保存的完整报表汇总；可在报表记录中下载原始 CSV。" };
+  const bucket = appEnv().FILES;
+  const downloadedReports = [];
+  for (const file of files.results) {
+    let summary = JSON.parse(String(file.summaryJson));
+    if (!Array.isArray(summary.groups) && bucket) {
+      const object = await bucket.get(String(file.objectKey));
+      if (object) {
+        summary = summarizeCsv(await object.text());
+        await d1().prepare(`UPDATE report_files SET row_count=?,summary_json=? WHERE report_job_id=? AND part_number=?`).bind(summary.rowCount, JSON.stringify(summary), job.id, file.partNumber).run();
+      }
+    }
+    downloadedReports.push({ part: file.partNumber, filename: file.filename, size: file.size, ...summary });
+  }
+  return { reportId: job.report_id, status: "COMPLETED", reusedSavedReport: true, downloadedReports, note: "已复用此前完成并私有保存的完整报表汇总；可在报表记录中下载原始 CSV。" };
 }
 
 async function upsertJob(context: WorkflowContext, createTool: string, requestFingerprint: string, args: Record<string, unknown>, reportId?: string): Promise<JobRow> {
