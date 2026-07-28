@@ -1,7 +1,7 @@
 import { accountCredentials } from "./accounts";
-import { AmazonMcpClient, type AmazonCredentials } from "./amazon-mcp";
+import { AmazonAdsApiClient, executeDirectCampaignReport } from "./amazon-ads-api";
+import type { AmazonCredentials } from "./amazon-mcp";
 import { d1 } from "./db";
-import { executeReportTool } from "./report-jobs";
 
 type WindowKey = "1d" | "7d" | "30d" | "90d";
 type Metrics = Record<string, number>;
@@ -30,31 +30,6 @@ function shiftDate(date: string, days: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-function combineReportResult(result: unknown): SnapshotPayload {
-  const reports = result && typeof result === "object" && Array.isArray((result as { downloadedReports?: unknown }).downloadedReports)
-    ? (result as { downloadedReports: Array<{ rowCount?: number; aggregates?: Metrics; groups?: Group[] }> }).downloadedReports : [];
-  const aggregates: Metrics = {}, groups = new Map<string, Group>();
-  let rowCount = 0;
-  for (const report of reports) {
-    rowCount += Number(report.rowCount ?? 0);
-    for (const [key, value] of Object.entries(report.aggregates ?? {})) aggregates[key] = (aggregates[key] ?? 0) + Number(value || 0);
-    for (const source of report.groups ?? []) {
-      const key = source.campaignId || source.campaignName;
-      if (!key) continue;
-      const target = groups.get(key) ?? { campaignId: source.campaignId, campaignName: source.campaignName, aggregates: {} };
-      for (const [metric, value] of Object.entries(source.aggregates ?? {})) target.aggregates[metric] = (target.aggregates[metric] ?? 0) + Number(value || 0);
-      groups.set(key, target);
-    }
-  }
-  return { aggregates, groups: [...groups.values()], rowCount };
-}
-
-function reportArgs(row: Record<string, unknown>, startDate: string, endDate: string) {
-  const marketplace = String(row.marketplace ?? "US").toUpperCase();
-  const currency = String(row.currency ?? (marketplace === "US" ? "USD" : "USD")).toUpperCase();
-  return { body: { reports: [{ currencyOfView: currency, format: "CSV", periods: [{ datePeriod: { startDate, endDate } }] }] } };
-}
-
 async function runSnapshot(
   row: Record<string, unknown>,
   credentials: AmazonCredentials,
@@ -63,7 +38,7 @@ async function runSnapshot(
   snapshotDate: string,
   force = false,
   onStatus?: (text: string) => void,
-  sharedClient?: AmazonMcpClient,
+  sharedClient?: AmazonAdsApiClient,
   timeoutMs = 60 * 60_000,
 ) {
   const window = WINDOWS.find(item => item.key === key)!;
@@ -80,14 +55,13 @@ async function runSnapshot(
     await d1().prepare(`UPDATE report_snapshots SET status='RUNNING',error=NULL,attempts=attempts+1,updated_at=? WHERE id=?`).bind(now, id).run();
   }
   try {
-    credentials.advertiserAccountId = String(row.advertiser_account_id ?? credentials.advertiserAccountId ?? "") || undefined;
-    onStatus?.(`${window.label}：正在创建报表`);
-    const result = await executeReportTool(sharedClient ?? new AmazonMcpClient(credentials, "DYNAMIC"), "reporting-create_campaign_report", reportArgs(row, startDate, endDate), {
+    onStatus?.(`${window.label}：正在创建 Amazon Ads API v3 报表`);
+    const result = await executeDirectCampaignReport(sharedClient ?? new AmazonAdsApiClient(credentials), startDate, endDate, {
       userId: String(row.user_id), accountId: String(row.id), timeoutMs,
       onStatus: text => onStatus?.(`${window.label}：${text}`),
     });
-    const payload = combineReportResult(result);
-    const reportId = result && typeof result === "object" ? String((result as { reportId?: unknown }).reportId ?? "") : "";
+    const payload = result.summary;
+    const reportId = result.reportId;
     await d1().prepare(`UPDATE report_snapshots SET status='COMPLETED',report_id=?,metrics_json=?,error=NULL,completed_at=?,updated_at=? WHERE id=?`).bind(reportId || null, JSON.stringify(payload), Date.now(), Date.now(), id).run();
     onStatus?.(`${window.label}：报表已保存并完成后端汇总`);
     return { windowKey: key, status: "COMPLETED" };
@@ -100,7 +74,7 @@ async function runSnapshot(
 }
 
 export async function runDailyReportSnapshots(): Promise<number> {
-  const accounts = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE advertiser_account_id IS NOT NULL ORDER BY updated_at`).all<Record<string, unknown>>();
+  const accounts = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts ORDER BY updated_at`).all<Record<string, unknown>>();
   for (const row of accounts.results) {
     const timezone = String(row.timezone ?? "UTC");
     const local = localParts(timezone);
@@ -120,19 +94,17 @@ export async function runDailyReportSnapshots(): Promise<number> {
 export async function runManualReportSnapshots(userId: string, accountId: string, onStatus?: (text: string) => void) {
   const row = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>();
   if (!row) throw new Error("店铺不存在");
-  if (!row.advertiser_account_id) throw new Error("当前店铺尚未识别 Advertiser Account ID，无法创建报表");
   const snapshotDate = localParts(String(row.timezone ?? "UTC")).date;
   const { credentials } = await accountCredentials(userId, accountId);
-  credentials.advertiserAccountId = String(row.advertiser_account_id ?? credentials.advertiserAccountId ?? "") || undefined;
-  const client = new AmazonMcpClient(credentials, "DYNAMIC");
+  const client = new AmazonAdsApiClient(credentials);
   const deadline = Date.now() + 60 * 60_000;
   const windows: Array<{ windowKey: WindowKey; status: string; error?: string }> = [];
-  onStatus?.("已启动四个时间窗口的报表 Skill；将复用同一连接并按顺序创建、轮询，整体最长等待 1 小时");
+  onStatus?.("已启动四个时间窗口的 Amazon Ads API v3 报表；后端会按顺序创建、轮询、下载和汇总，整体最长等待 1 小时");
   for (const window of WINDOWS) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       windows.push({ windowKey: window.key, status: "FAILED", error: "四个报表的整体等待时间已达到 1 小时" });
-      onStatus?.(`${window.label}：因整体等待时间已达到 1 小时，本次未继续创建`);
+      onStatus?.(`${window.label}：整体等待时间已达到 1 小时，本次未继续创建`);
       continue;
     }
     windows.push(await runSnapshot(row, credentials, window.key, window.days, snapshotDate, true, onStatus, client, remainingMs));

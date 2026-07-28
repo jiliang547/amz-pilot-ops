@@ -156,15 +156,22 @@ test("routes campaign ranking questions through backend CSV grouping", async () 
   assert.match(compiled, /哪个\|哪一个\|最高\|最低/);
 });
 test("builds nightly report snapshots, serves a local dashboard, and queries them before live reports", async () => {
-  const [snapshots, scheduler, agent, dashboard, page, schema, worker] = await Promise.all([
-    source("lib/snapshot-reports.ts"), source("lib/scheduler.ts"), source("lib/agent.ts"),
+  const [snapshots, adsApi, scheduler, agent, dashboard, page, schema, worker] = await Promise.all([
+    source("lib/snapshot-reports.ts"), source("lib/amazon-ads-api.ts"), source("lib/scheduler.ts"), source("lib/agent.ts"),
     source("app/api/dashboard/route.ts"), source("app/page.tsx"), source("db/schema.ts"), source("worker/index.ts"),
   ]);
   for (const key of ["1d", "7d", "30d", "90d"]) assert.match(snapshots, new RegExp(`key: "${key}"`));
   assert.match(snapshots, /modelRounds:\s*0,\s*snapshotPath:\s*true/);
-  assert.match(snapshots, /reporting-create_campaign_report/);
+  assert.match(snapshots, /executeDirectCampaignReport/);
+  assert.doesNotMatch(snapshots, /reporting-create_campaign_report/);
   assert.match(snapshots, /for \(const window of WINDOWS\)/);
-  assert.match(snapshots, /const client = new AmazonMcpClient\(credentials, "DYNAMIC"\)/);
+  assert.match(snapshots, /const client = new AmazonAdsApiClient\(credentials\)/);
+  assert.match(adsApi, /\/reporting\/reports/);
+  assert.match(adsApi, /application\/vnd\.createasyncreportrequest\.v3\+json/);
+  assert.match(adsApi, /reportTypeId: "spCampaigns"/);
+  assert.match(adsApi, /Amazon-Advertising-API-Scope/);
+  assert.match(adsApi, /expires_in/);
+  assert.match(adsApi, /DecompressionStream\("gzip"\)/);
   assert.doesNotMatch(snapshots, /Promise\.all\(WINDOWS\.map/);
   assert.match(snapshots, /deadline = Date\.now\(\) \+ 60 \* 60_000/);
   assert.match(scheduler, /runDailyReportSnapshots/);
