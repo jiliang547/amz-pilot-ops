@@ -2,4 +2,27 @@ import { d1 } from "./db";
 import { accountCredentials } from "./accounts";
 import { AmazonMcpClient, isWriteTool, preferredTools } from "./amazon-mcp";
 import { decide, type ModelContent } from "./model";
-export async function planAgent(userId: string, accountId: string | undefined, message: ModelContent) { const { row, credentials } = await accountCredentials(userId, accountId); const schemaClient = new AmazonMcpClient(credentials, "FIXED"); const live = await schemaClient.listTools(); const tools = live.filter(t => preferredTools.includes(t.name)); const decision = await decide(message, tools); const call = decision.toolCalls[0]; if (!call) return { type: "answer" as const, content: decision.content, accountId: row.id }; const tool = tools.find(t => t.name === call.function.name); if (!tool) throw new Error("模型请求了未授权工具"); let args: Record<string, unknown>; try { args = JSON.parse(call.function.arguments || "{}"); } catch { throw new Error("模型生成的工具参数无效"); } if (isWriteTool(tool.name)) { const id = crypto.randomUUID(); const summary = decision.content || `准备执行 ${tool.name}`; await d1().prepare(`INSERT INTO approvals(id,user_id,account_id,tool_name,tool_args,summary,status,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(id, userId, row.id, tool.name, JSON.stringify(args), summary, "pending", Date.now()).run(); return { type: "approval" as const, id, summary, toolName: tool.name, args, accountId: row.id }; } const result = await new AmazonMcpClient(credentials).callTool(tool.name, args); await d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), userId, row.id, "tool.read", tool.name, JSON.stringify(args).slice(0, 12000), "success", Date.now()).run(); return { type: "result" as const, toolName: tool.name, result, accountId: row.id }; }
+
+export async function planAgent(userId: string, accountId: string | undefined, message: ModelContent) {
+  const { row, credentials } = await accountCredentials(userId, accountId);
+  const schemaClient = new AmazonMcpClient(credentials, "FIXED");
+  const live = await schemaClient.listTools();
+  const tools = live.filter(t => preferredTools.includes(t.name));
+  const decision = await decide(userId, message, tools);
+  const call = decision.toolCalls[0];
+  if (!call) return { type: "answer" as const, content: decision.content, accountId: row.id };
+  const tool = tools.find(t => t.name === call.function.name);
+  if (!tool) throw new Error("模型请求了未授权工具");
+  let args: Record<string, unknown>;
+  try { args = JSON.parse(call.function.arguments || "{}"); }
+  catch { throw new Error("模型生成的工具参数无效"); }
+  if (isWriteTool(tool.name)) {
+    const id = crypto.randomUUID();
+    const summary = decision.content || `准备执行 ${tool.name}`;
+    await d1().prepare(`INSERT INTO approvals(id,user_id,account_id,tool_name,tool_args,summary,status,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(id, userId, row.id, tool.name, JSON.stringify(args), summary, "pending", Date.now()).run();
+    return { type: "approval" as const, id, summary, toolName: tool.name, args, accountId: row.id };
+  }
+  const result = await new AmazonMcpClient(credentials).callTool(tool.name, args);
+  await d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), userId, row.id, "tool.read", tool.name, JSON.stringify(args).slice(0, 12000), "success", Date.now()).run();
+  return { type: "result" as const, toolName: tool.name, result, accountId: row.id };
+}
