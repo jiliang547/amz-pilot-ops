@@ -36,23 +36,28 @@ test("accepts the five Amazon credentials and discovers display metadata", async
   assert.match(route, /advertiserAccountDiscovered/);
   assert.match(route, /encryptJson\(credentials\)/);
 });
-test("uses a compact streaming MCP agent loop with the Amazon playbook", async () => {
-  const [model, agent, route, router, playbook] = await Promise.all([
+test("uses the full streaming MCP agent loop and completes asynchronous reports", async () => {
+  const [model, agent, route, amazon, playbook, report] = await Promise.all([
     source("lib/model.ts"),
     source("lib/agent.ts"),
     source("app/api/chat/route.ts"),
-    source("lib/tool-router.ts"),
+    source("lib/amazon-mcp.ts"),
     source("lib/amazon-playbook.ts"),
+    source("lib/report-result.ts"),
   ]);
   assert.match(model, /stream:\s*true/);
-  assert.match(model, /compactSchema/);
-  assert.doesNotMatch(model, /streamAnswer/);
-  assert.match(agent, /for \(let step = 0; step < 4; step\+\+\)/);
+  assert.doesNotMatch(model, /compactSchema|streamAnswer/);
+  assert.match(model, /parameters: tool\.inputSchema/);
+  assert.match(agent, /while \(true\)/);
+  assert.doesNotMatch(agent, /step < 4|slice\(0, 3\)|selectToolsForMessage/);
   assert.match(agent, /messages\.push\(\{ role: "tool"/);
+  assert.match(agent, /reportIsPending/);
+  assert.match(agent, /enrichReportResult/);
   assert.match(route, /planAgent\(user\.id/);
   assert.doesNotMatch(route, /finalMessages|streamAnswer/);
-  assert.match(router, /selectToolsForMessage/);
-  assert.match(playbook, /update_target_bid/);
-  assert.match(playbook, /PENDING → COMPLETED/);
-  assert.match(playbook, /ads_accounts-list_ads_accounts/);
+  assert.match(amazon, /campaign_management-query_portfolio/);
+  assert.match(playbook, /今天总花费/);
+  assert.match(playbook, /查询轮数不设硬上限/);
+  assert.match(report, /downloadedReports/);
+  assert.match(report, /aggregates/);
 });

@@ -1,17 +1,40 @@
 import { d1 } from "./db";
 import { accountCredentials } from "./accounts";
-import { AmazonMcpClient, isWriteTool, preferredTools } from "./amazon-mcp";
+import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./amazon-mcp";
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
-import { selectToolsForMessage } from "./tool-router";
-
-function messageText(content: ModelContent): string {
-  if (typeof content === "string") return content;
-  return content.filter(item => item.type === "text").map(item => item.type === "text" ? item.text : "").join("\n");
-}
+import { enrichReportResult, reportIsPending } from "./report-result";
 
 function parseArgs(call: ToolCall): Record<string, unknown> {
   try { return JSON.parse(call.function.arguments || "{}"); }
   catch { throw new Error(`模型为 ${call.function.name} 生成的工具参数不是有效 JSON`); }
+}
+
+function stableKey(name: string, args: Record<string, unknown>): string {
+  return `${name}:${JSON.stringify(args)}`;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+async function callReadTool(
+  client: AmazonMcpClient,
+  name: string,
+  args: Record<string, unknown>,
+  onStatus?: (text: string) => void,
+): Promise<unknown> {
+  let result = await client.callTool(name, args);
+  if (name === "reporting-retrieve_report") {
+    let poll = 0;
+    while (reportIsPending(result)) {
+      poll++;
+      onStatus?.(`Amazon 报表仍在生成，正在轮询同一个 Report ID（第 ${poll} 次）`);
+      await sleep(Math.min(10_000, 2_000 + poll * 1_000));
+      result = await client.callTool(name, args);
+    }
+    result = await enrichReportResult(result, onStatus);
+  }
+  return result;
 }
 
 export async function planAgent(
@@ -21,24 +44,30 @@ export async function planAgent(
   onStatus?: (text: string) => void,
 ) {
   const { row, credentials } = await accountCredentials(userId, accountId);
-  const schemaClient = new AmazonMcpClient(credentials, "FIXED");
-  const live = await schemaClient.listTools();
-  const allowed = live.filter(tool => preferredTools.includes(tool.name));
-  const tools = selectToolsForMessage(messageText(message), allowed);
+  const fixedClient = new AmazonMcpClient(credentials, "FIXED");
+  const dynamicClient = new AmazonMcpClient(credentials, "DYNAMIC");
+  const live = await fixedClient.listTools();
+  const tools = live.filter(tool => preferredTools.includes(tool.name));
+  const clients = { FIXED: fixedClient, DYNAMIC: dynamicClient };
   const messages: AgentMessage[] = [{ role: "user", content: message }];
+  const resultCache = new Map<string, unknown>();
+  let round = 0;
 
-  for (let step = 0; step < 4; step++) {
-    onStatus?.(step === 0 ? `正在规划操作（已按问题筛选 ${tools.length} 个 MCP 工具）` : `正在基于第 ${step} 轮真实查询结果继续分析`);
+  while (true) {
+    round++;
+    onStatus?.(round === 1
+      ? `正在按操作手册分析，并提供全部 ${tools.length} 个已验证 MCP 工具及实时 Schema`
+      : `正在基于第 ${round - 1} 轮真实查询结果继续分析`);
     const decision = await decide(userId, messages, tools);
     if (!decision.toolCalls.length) {
       const content = decision.content.trim();
       if (!content) throw new Error("模型没有返回回答或工具调用");
-      return { type: "answer" as const, content, accountId: row.id, modelRounds: step + 1 };
+      return { type: "answer" as const, content, accountId: row.id, modelRounds: round };
     }
 
     const resolved = decision.toolCalls.map(call => {
       const tool = tools.find(candidate => candidate.name === call.function.name);
-      if (!tool) throw new Error(`模型请求了未授权或与当前问题无关的工具：${call.function.name}`);
+      if (!tool) throw new Error(`模型请求了未授权或未经手册验证的工具：${call.function.name}`);
       return { call, tool, args: parseArgs(call) };
     });
     const writes = resolved.filter(item => isWriteTool(item.tool.name));
@@ -48,17 +77,24 @@ export async function planAgent(
       const id = crypto.randomUUID();
       const summary = decision.content.trim() || `准备执行 ${write.tool.name}。请核对目标账户、对象 ID 和参数后再批准。`;
       await d1().prepare(`INSERT INTO approvals(id,user_id,account_id,tool_name,tool_args,summary,status,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(id, userId, row.id, write.tool.name, JSON.stringify(write.args), summary, "pending", Date.now()).run();
-      return { type: "approval" as const, id, summary, toolName: write.tool.name, args: write.args, accountId: row.id, modelRounds: step + 1 };
+      return { type: "approval" as const, id, summary, toolName: write.tool.name, args: write.args, accountId: row.id, modelRounds: round };
     }
 
     messages.push({ role: "assistant", content: decision.content || "", tool_calls: decision.toolCalls });
-    onStatus?.(`正在调用 ${resolved.map(item => item.tool.name).join("、")}`);
-    for (const item of resolved.slice(0, 3)) {
-      const result = await new AmazonMcpClient(credentials).callTool(item.tool.name, item.args);
+    for (const item of resolved) {
+      const key = stableKey(item.tool.name, item.args);
+      const cached = resultCache.get(key);
+      onStatus?.(cached === undefined ? `正在调用 ${item.tool.name}` : `正在复用本轮已取得的 ${item.tool.name} 结果`);
+      const result = cached === undefined
+        ? await callReadTool(clients[modeForTool(item.tool.name)], item.tool.name, item.args, onStatus)
+        : cached;
+      if (cached === undefined) resultCache.set(key, result);
       await d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), userId, row.id, "tool.read", item.tool.name, JSON.stringify(item.args).slice(0, 12000), "success", Date.now()).run();
-      const resultText = JSON.stringify(result).slice(0, 24000);
+      const serialized = JSON.stringify(result) || "null";
+      const resultText = serialized.length > 450_000
+        ? `${serialized.slice(0, 450_000)}\n[工具结果过大，已在 450000 字符处截断；请使用汇总字段回答]`
+        : serialized;
       messages.push({ role: "tool", tool_call_id: item.call.id, name: item.tool.name, content: resultText });
     }
   }
-  throw new Error("本次任务需要超过 4 轮 MCP 查询。请缩小查询范围，或指定 Campaign / Ad Group / Target ID 后重试");
 }
