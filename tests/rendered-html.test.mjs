@@ -155,7 +155,7 @@ test("routes campaign ranking questions through backend CSV grouping", async () 
   assert.match(reports, /summary\.groups/);
   assert.match(compiled, /哪个\|哪一个\|最高\|最低/);
 });
-test("builds nightly report snapshots, serves a local dashboard, and queries them before live reports", async () => {
+test("maintains daily ad facts, refreshes attribution, and computes dashboard windows locally", async () => {
   const [snapshots, adsApi, scheduler, agent, dashboard, page, schema, worker] = await Promise.all([
     source("lib/snapshot-reports.ts"), source("lib/amazon-ads-api.ts"), source("lib/scheduler.ts"), source("lib/agent.ts"),
     source("app/api/dashboard/route.ts"), source("app/page.tsx"), source("db/schema.ts"), source("worker/index.ts"),
@@ -164,8 +164,11 @@ test("builds nightly report snapshots, serves a local dashboard, and queries the
   assert.match(snapshots, /modelRounds:\s*0,\s*snapshotPath:\s*true/);
   assert.match(snapshots, /executeDirectCampaignReport/);
   assert.doesNotMatch(snapshots, /reporting-create_campaign_report/);
-  assert.match(snapshots, /for \(const window of WINDOWS\)/);
-  assert.match(snapshots, /const client = new AmazonAdsApiClient\(credentials\)/);
+  assert.match(snapshots, /ROLLING_ATTRIBUTION_DAYS = 15/);
+  assert.match(snapshots, /initialStart = shiftDate\(endDate, -89\)/);
+  assert.match(snapshots, /ON CONFLICT\(account_id,report_date,campaign_id,ad_group_id\) DO UPDATE/);
+  assert.match(snapshots, /sync_id<>\?/);
+  assert.match(snapshots, /DELETE FROM report_snapshots WHERE account_id=\?/);
   assert.match(adsApi, /\/reporting\/reports/);
   assert.match(adsApi, /application\/vnd\.createasyncreportrequest\.v3\+json/);
   assert.match(adsApi, /reportTypeId: "spCampaigns"/);
@@ -173,7 +176,8 @@ test("builds nightly report snapshots, serves a local dashboard, and queries the
   assert.match(adsApi, /expires_in/);
   assert.match(adsApi, /DecompressionStream\("gzip"\)/);
   assert.doesNotMatch(snapshots, /Promise\.all\(WINDOWS\.map/);
-  assert.match(snapshots, /deadline = Date\.now\(\) \+ 60 \* 60_000/);
+  assert.match(snapshots, /aggregateWindow/);
+  assert.match(snapshots, /RAW_REPORT_RETENTION_DAYS = 30/);
   assert.match(scheduler, /runDailyReportSnapshots/);
   assert.match(snapshots, /runManualReportSnapshots/);
   assert.ok(agent.indexOf("trySavedSnapshotQuery") < agent.indexOf("tryRankedCampaignReport({"));
@@ -181,8 +185,9 @@ test("builds nightly report snapshots, serves a local dashboard, and queries the
   assert.match(dashboard, /export async function POST/);
   assert.match(page, /广告数据看板/);
   assert.match(page, /refreshDashboard/);
-  assert.match(page, /一次拉取四份报表/);
+  assert.match(page, /刷新每日数据/);
   assert.match(page, /analyzeDashboard/);
-  assert.match(schema, /report_snapshots/);
+  assert.match(schema, /ad_daily_facts/);
+  assert.match(schema, /ad_data_syncs/);
   assert.match(worker, /async scheduled/);
 });

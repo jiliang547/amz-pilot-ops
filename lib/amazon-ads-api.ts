@@ -239,13 +239,14 @@ export async function executeDirectCampaignReport(
   ).bind(context.userId, context.accountId, requestFingerprint).first<JobRow>();
   if (job?.status === "COMPLETED") {
     const saved = await d1().prepare(
-      `SELECT summary_json summaryJson FROM report_files WHERE report_job_id=? ORDER BY part_number LIMIT 1`,
-    ).bind(job.id).first<{ summaryJson: string }>();
-    if (saved?.summaryJson) {
-      return { reportId: job.reportId, summary: JSON.parse(saved.summaryJson) as AdsReportSummary, reused: true };
+      `SELECT summary_json summaryJson,object_key objectKey FROM report_files WHERE report_job_id=? ORDER BY part_number LIMIT 1`,
+    ).bind(job.id).first<{ summaryJson: string; objectKey: string }>();
+    const object = saved?.objectKey ? await appEnv().FILES?.get(saved.objectKey) : null;
+    if (saved?.summaryJson && object) {
+      const rows = JSON.parse(await object.text()) as unknown;
+      if (Array.isArray(rows)) return { reportId: job.reportId, summary: JSON.parse(saved.summaryJson) as AdsReportSummary, rows, jobId: job.id, reused: true };
     }
   }
-
   let reportId = job?.reportId ?? "";
   if (!job) {
     const id = crypto.randomUUID();
@@ -286,7 +287,7 @@ export async function executeDirectCampaignReport(
       `INSERT INTO report_files(id,report_job_id,part_number,object_key,filename,content_type,size,row_count,summary_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(report_job_id,part_number) DO UPDATE SET object_key=excluded.object_key,filename=excluded.filename,content_type=excluded.content_type,size=excluded.size,row_count=excluded.row_count,summary_json=excluded.summary_json`,
     ).bind(crypto.randomUUID(), job.id, 1, objectKey, `amazon-ads-sp-campaign-${startDate}-${endDate}.json`, "application/json; charset=utf-8", bytes.byteLength, summary.rowCount, JSON.stringify(summary), Date.now()).run();
     await d1().prepare(`UPDATE report_jobs SET status='COMPLETED',error=NULL,completed_at=?,updated_at=? WHERE id=?`).bind(Date.now(), Date.now(), job.id).run();
-    return { reportId, summary, reused: false };
+    return { reportId, summary, rows: downloaded.rows, jobId: job.id, reused: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const timeout = /超时/.test(message);
