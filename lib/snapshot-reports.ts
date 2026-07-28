@@ -55,7 +55,17 @@ function reportArgs(row: Record<string, unknown>, startDate: string, endDate: st
   return { body: { reports: [{ currencyOfView: currency, format: "CSV", periods: [{ datePeriod: { startDate, endDate } }] }] } };
 }
 
-async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCredentials, key: WindowKey, days: number, snapshotDate: string, force = false, onStatus?: (text: string) => void) {
+async function runSnapshot(
+  row: Record<string, unknown>,
+  credentials: AmazonCredentials,
+  key: WindowKey,
+  days: number,
+  snapshotDate: string,
+  force = false,
+  onStatus?: (text: string) => void,
+  sharedClient?: AmazonMcpClient,
+  timeoutMs = 60 * 60_000,
+) {
   const window = WINDOWS.find(item => item.key === key)!;
   const endDate = shiftDate(snapshotDate, -1), startDate = shiftDate(endDate, -(days - 1)), now = Date.now();
   const existing = await d1().prepare(`SELECT id,status,attempts,updated_at updatedAt FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(row.id, key, snapshotDate).first<{ id: string; status: string; attempts: number; updatedAt: number }>();
@@ -72,8 +82,8 @@ async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCred
   try {
     credentials.advertiserAccountId = String(row.advertiser_account_id ?? credentials.advertiserAccountId ?? "") || undefined;
     onStatus?.(`${window.label}：正在创建报表`);
-    const result = await executeReportTool(new AmazonMcpClient(credentials, "DYNAMIC"), "reporting-create_campaign_report", reportArgs(row, startDate, endDate), {
-      userId: String(row.user_id), accountId: String(row.id), timeoutMs: 60 * 60_000,
+    const result = await executeReportTool(sharedClient ?? new AmazonMcpClient(credentials, "DYNAMIC"), "reporting-create_campaign_report", reportArgs(row, startDate, endDate), {
+      userId: String(row.user_id), accountId: String(row.id), timeoutMs,
       onStatus: text => onStatus?.(`${window.label}：${text}`),
     });
     const payload = combineReportResult(result);
@@ -113,8 +123,20 @@ export async function runManualReportSnapshots(userId: string, accountId: string
   if (!row.advertiser_account_id) throw new Error("当前店铺尚未识别 Advertiser Account ID，无法创建报表");
   const snapshotDate = localParts(String(row.timezone ?? "UTC")).date;
   const { credentials } = await accountCredentials(userId, accountId);
-  onStatus?.("已启动四个时间窗口的报表 Skill，将并行创建并持续轮询，最长等待 1 小时");
-  const windows = await Promise.all(WINDOWS.map(window => runSnapshot(row, { ...credentials }, window.key, window.days, snapshotDate, true, onStatus)));
+  credentials.advertiserAccountId = String(row.advertiser_account_id ?? credentials.advertiserAccountId ?? "") || undefined;
+  const client = new AmazonMcpClient(credentials, "DYNAMIC");
+  const deadline = Date.now() + 60 * 60_000;
+  const windows: Array<{ windowKey: WindowKey; status: string; error?: string }> = [];
+  onStatus?.("已启动四个时间窗口的报表 Skill；将复用同一连接并按顺序创建、轮询，整体最长等待 1 小时");
+  for (const window of WINDOWS) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      windows.push({ windowKey: window.key, status: "FAILED", error: "四个报表的整体等待时间已达到 1 小时" });
+      onStatus?.(`${window.label}：因整体等待时间已达到 1 小时，本次未继续创建`);
+      continue;
+    }
+    windows.push(await runSnapshot(row, credentials, window.key, window.days, snapshotDate, true, onStatus, client, remainingMs));
+  }
   return { snapshotDate, windows };
 }
 

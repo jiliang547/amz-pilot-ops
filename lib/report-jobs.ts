@@ -128,6 +128,29 @@ async function fingerprint(name: string, args: Record<string, unknown>): Promise
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+async function callCreateWithRetry(
+  client: AmazonMcpClient,
+  name: string,
+  args: Record<string, unknown>,
+  context: WorkflowContext,
+): Promise<unknown> {
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await client.callTool(name, args);
+    } catch (error) {
+      if (!isTransientError(error) || attempt === maxAttempts) throw error;
+      const baseDelay = Math.min(60_000, 5_000 * 2 ** (attempt - 1));
+      const delay = baseDelay + Math.floor(Math.random() * 1_500);
+      context.onStatus?.(
+        `Amazon 暂时限流或服务繁忙，创建请求将在 ${Math.ceil(delay / 1000)} 秒后自动重试（${attempt}/${maxAttempts - 1}）`,
+      );
+      await sleep(delay);
+    }
+  }
+  throw new Error("Amazon 报表创建重试次数已用尽");
+}
+
 async function savedResult(job: JobRow): Promise<unknown | null> {
   if (job.status !== "COMPLETED") return null;
   const files = await d1().prepare(`SELECT part_number partNumber,filename,size,row_count rowCount,summary_json summaryJson,object_key objectKey FROM report_files WHERE report_job_id=? ORDER BY part_number`).bind(job.id).all<Record<string, unknown>>();
@@ -256,7 +279,7 @@ export async function executeReportTool(client: AmazonMcpClient, name: string, a
   if (!job.report_id && job.status === "CREATE_UNCERTAIN") throw new Error("此前相同条件的报表创建结果不确定，系统已阻止自动重建；请在报表记录中查看错误详情。");
   let created: unknown;
   try {
-    created = await client.callTool(name, args);
+    created = await callCreateWithRetry(client, name, args, context);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await d1().prepare(`UPDATE report_jobs SET status='CREATE_FAILED',error=?,updated_at=? WHERE id=?`).bind(message.slice(0, 1000), Date.now(), job.id).run();
