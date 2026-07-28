@@ -36,3 +36,23 @@ test("accepts the five Amazon credentials and discovers display metadata", async
   assert.match(route, /advertiserAccountDiscovered/);
   assert.match(route, /encryptJson\(credentials\)/);
 });
+test("uses a compact streaming MCP agent loop with the Amazon playbook", async () => {
+  const [model, agent, route, router, playbook] = await Promise.all([
+    source("lib/model.ts"),
+    source("lib/agent.ts"),
+    source("app/api/chat/route.ts"),
+    source("lib/tool-router.ts"),
+    source("lib/amazon-playbook.ts"),
+  ]);
+  assert.match(model, /stream:\s*true/);
+  assert.match(model, /compactSchema/);
+  assert.doesNotMatch(model, /streamAnswer/);
+  assert.match(agent, /for \(let step = 0; step < 4; step\+\+\)/);
+  assert.match(agent, /messages\.push\(\{ role: "tool"/);
+  assert.match(route, /planAgent\(user\.id/);
+  assert.doesNotMatch(route, /finalMessages|streamAnswer/);
+  assert.match(router, /selectToolsForMessage/);
+  assert.match(playbook, /update_target_bid/);
+  assert.match(playbook, /PENDING → COMPLETED/);
+  assert.match(playbook, /ads_accounts-list_ads_accounts/);
+});
