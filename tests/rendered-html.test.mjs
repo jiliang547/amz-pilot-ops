@@ -155,3 +155,18 @@ test("routes campaign ranking questions through backend CSV grouping", async () 
   assert.match(reports, /summary\.groups/);
   assert.match(compiled, /哪个\|哪一个\|最高\|最低/);
 });
+test("builds nightly report snapshots, serves a local dashboard, and queries them before live reports", async () => {
+  const [snapshots, scheduler, agent, dashboard, page, schema, worker] = await Promise.all([
+    source("lib/snapshot-reports.ts"), source("lib/scheduler.ts"), source("lib/agent.ts"),
+    source("app/api/dashboard/route.ts"), source("app/page.tsx"), source("db/schema.ts"), source("worker/index.ts"),
+  ]);
+  for (const key of ["1d", "7d", "30d", "90d"]) assert.match(snapshots, new RegExp(`key: "${key}"`));
+  assert.match(snapshots, /modelRounds:\s*0,\s*snapshotPath:\s*true/);
+  assert.match(snapshots, /reporting-create_campaign_report/);
+  assert.match(scheduler, /runDailyReportSnapshots/);
+  assert.ok(agent.indexOf("trySavedSnapshotQuery") < agent.indexOf("tryRankedCampaignReport({"));
+  assert.match(dashboard, /dashboardData/);
+  assert.match(page, /广告数据看板/);
+  assert.match(schema, /report_snapshots/);
+  assert.match(worker, /async scheduled/);
+});

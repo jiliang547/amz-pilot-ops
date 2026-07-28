@@ -7,6 +7,7 @@ import { executeReportTool } from "./report-jobs";
 import { tryFastAggregateReport } from "./fast-report";
 import { tryRankedCampaignReport } from "./ranked-report";
 import { tryCompiledSkill } from "./compiled-skills";
+import { trySavedSnapshotQuery } from "./snapshot-reports";
 import type { ActiveSkill } from "./custom-skills";
 function tryLocalConversation(message?: string) {
   if (!message) return undefined;
@@ -106,6 +107,8 @@ export async function planAgent(
   } catch { /* Saved account context is still usable. */ }
 
   if (!skill && plainMessage) {
+    const snapshot = await trySavedSnapshotQuery({ userId, accountId: String(row.id), message: plainMessage, row });
+    if (snapshot) return snapshot;
     const ranked = await tryRankedCampaignReport({ userId, message: plainMessage, row, credentials, onStatus });
     if (ranked) return ranked;
     const fast = await tryFastAggregateReport({ userId, message: plainMessage, row, credentials, onStatus });
