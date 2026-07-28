@@ -102,3 +102,14 @@ test("routes standard metric reports through backend aggregation without model t
   assert.match(report, /CREATE_UNCERTAIN/);
   assert.match(chat, /chat_execution_failed/);
 });
+
+test("greetings stay local and model cache prefix is stable within a day", async () => {
+  const agent = await source("lib/agent.ts");
+  const model = await source("lib/model.ts");
+  assert.match(agent, /tryLocalConversation/);
+  assert.match(agent, /modelRounds:\s*0,\s*localPath:\s*true/);
+  assert.match(agent, /未调用大模型或 Amazon MCP/);
+  assert.match(model, /toISOString\(\)\.slice\(0,\s*10\)/);
+  assert.doesNotMatch(model, /当前服务器 UTC 时间：\$\{new Date\(\)\.toISOString\(\)\}/);
+  assert.match(model, /model_request_metrics/);
+});

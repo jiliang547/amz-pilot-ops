@@ -64,17 +64,29 @@ async function parseStreamingReply(response: Response): Promise<ModelReply> {
 
 export async function decide(userId: string, messages: AgentMessage[], tools: McpTool[], skill?: ActiveSkill, accountContext = ""): Promise<ModelReply> {
   const config = await modelConfigForUser(userId);
+  const stableUtcDate = new Date().toISOString().slice(0, 10);
+  const systemContent = `${SYSTEM}${skillSystemBlock(skill)}${accountContext}\n当前服务器 UTC 日期：${stableUtcDate}。用户说“今天”时，优先根据 ads_accounts 返回的广告账户时区确定报表日期。`;
+  const requestBody = {
+    model: config.modelName,
+    messages: [{ role: "system" as const, content: systemContent }, ...messages],
+    tools: tools.length ? toolDefs(tools) : undefined,
+    tool_choice: tools.length ? "auto" : undefined,
+    stream: true,
+    temperature: 0.1,
+  };
+  const serializedBody = JSON.stringify(requestBody);
+  console.info("model_request_metrics", {
+    source: config.source,
+    model: config.modelName,
+    systemChars: systemContent.length,
+    messageChars: JSON.stringify(messages).length,
+    toolSchemaChars: requestBody.tools ? JSON.stringify(requestBody.tools).length : 0,
+    requestChars: serializedBody.length,
+  });
   const response = await fetch(modelEndpoint(config), {
     method: "POST",
     headers: modelHeaders(config),
-    body: JSON.stringify({
-      model: config.modelName,
-      messages: [{ role: "system", content: `${SYSTEM}${skillSystemBlock(skill)}${accountContext}\n当前服务器 UTC 时间：${new Date().toISOString()}。用户说“今天”时，优先根据 ads_accounts 返回的广告账户时区确定报表日期。` }, ...messages],
-      tools: tools.length ? toolDefs(tools) : undefined,
-      tool_choice: tools.length ? "auto" : undefined,
-      stream: true,
-      temperature: 0.1,
-    }),
+    body: serializedBody,
   });
   if (!response.ok) throw new Error(`模型接口失败 (${response.status}): ${(await response.text()).slice(0, 180)}`);
   const contentType = response.headers.get("content-type") ?? "";

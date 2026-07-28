@@ -1,4 +1,4 @@
-﻿import { d1 } from "./db";
+import { d1 } from "./db";
 import { accountCredentials } from "./accounts";
 import { accountContextBlock, discoverAccountMetadata } from "./account-context";
 import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./amazon-mcp";
@@ -6,6 +6,21 @@ import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./m
 import { executeReportTool } from "./report-jobs";
 import { tryFastAggregateReport } from "./fast-report";
 import type { ActiveSkill } from "./custom-skills";
+function tryLocalConversation(message?: string) {
+  if (!message) return undefined;
+  const normalized = message.trim().replace(/[!！?？。.，,\s]+$/g, "").toLowerCase();
+  if (!normalized) return undefined;
+  if (/^(你好|您好|嗨|hi|hello|hey|在吗|有人吗)$/.test(normalized)) {
+    return "你好，我是 AMZ Pilot。你可以直接告诉我需要查询或调整的 Amazon Ads 内容，例如“查询今天的广告花费总额”。";
+  }
+  if (/^(谢谢|感谢|多谢|thanks|thank you|好的|好|ok|okay|收到|明白了)$/.test(normalized)) {
+    return "不客气。需要继续查询、分析或调整 Amazon Ads 时，直接告诉我即可。";
+  }
+  if (/^(你是谁|你能做什么|有什么功能|怎么用|帮助|help)$/.test(normalized)) {
+    return "我是 AMZ Pilot，可以查询 Amazon Ads 账户、广告活动、广告组、广告、关键词与报表，也可以在你确认后执行调整。标准花费、销售额、点击量等汇总查询会直接由后端完成，不消耗模型 Token。";
+  }
+  return undefined;
+}
 
 function parseArgs(call: ToolCall): Record<string, unknown> {
   try { return JSON.parse(call.function.arguments || "{}"); }
@@ -50,6 +65,14 @@ export async function planAgent(
   skill?: ActiveSkill,
   plainMessage?: string,
 ) {
+  if (!skill) {
+    const localAnswer = tryLocalConversation(plainMessage);
+    if (localAnswer) {
+      onStatus?.("已由后端直接回答，未调用大模型或 Amazon MCP");
+      return { type: "answer" as const, content: localAnswer, accountId: accountId ?? "local", modelRounds: 0, localPath: true };
+    }
+  }
+
   const { row, credentials } = await accountCredentials(userId, accountId);
   const fixedClient = new AmazonMcpClient(credentials, "FIXED");
   const dynamicClient = new AmazonMcpClient(credentials, "DYNAMIC");
