@@ -163,13 +163,17 @@ test("builds nightly report snapshots, serves a local dashboard, and queries the
   for (const key of ["1d", "7d", "30d", "90d"]) assert.match(snapshots, new RegExp(`key: "${key}"`));
   assert.match(snapshots, /modelRounds:\s*0,\s*snapshotPath:\s*true/);
   assert.match(snapshots, /reporting-create_campaign_report/);
+  assert.match(snapshots, /Promise\.all\(WINDOWS\.map/);
+  assert.match(snapshots, /timeoutMs: 60 \* 60_000/);
   assert.match(scheduler, /runDailyReportSnapshots/);
-  assert.match(snapshots, /runManualReportSnapshot/);
+  assert.match(snapshots, /runManualReportSnapshots/);
   assert.ok(agent.indexOf("trySavedSnapshotQuery") < agent.indexOf("tryRankedCampaignReport({"));
   assert.match(dashboard, /dashboardData/);
   assert.match(dashboard, /export async function POST/);
   assert.match(page, /广告数据看板/);
   assert.match(page, /refreshDashboard/);
+  assert.match(page, /一次拉取四份报表/);
+  assert.match(page, /analyzeDashboard/);
   assert.match(schema, /report_snapshots/);
   assert.match(worker, /async scheduled/);
 });

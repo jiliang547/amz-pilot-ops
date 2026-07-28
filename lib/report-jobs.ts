@@ -5,7 +5,7 @@ const MAX_REPORT_BYTES = 25 * 1024 * 1024;
 const POLL_INTERVAL_MS = 15_000;
 const PRIVATE_HOST = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i;
 
-type WorkflowContext = { userId: string; accountId: string; onStatus?: (text: string) => void };
+type WorkflowContext = { userId: string; accountId: string; onStatus?: (text: string) => void; timeoutMs?: number };
 type JobRow = { id: string; report_id: string | null; status: string; request_fingerprint: string };
 
 function walk(value: unknown, visitor: (key: string, value: unknown) => void, key = ""): void {
@@ -191,7 +191,13 @@ async function downloadAndPersist(job: JobRow, value: unknown, context: Workflow
 async function pollReport(client: AmazonMcpClient, job: JobRow, context: WorkflowContext): Promise<unknown> {
   if (!job.report_id) throw new Error("Amazon 创建报表响应缺少 reportId，无法安全轮询");
   let poll = 0;
+  const startedAt = Date.now();
   while (true) {
+    if (context.timeoutMs && Date.now() - startedAt >= context.timeoutMs) {
+      const error = `Amazon 报表在 ${Math.round(context.timeoutMs / 60_000)} 分钟内未完成，已停止本次轮询`;
+      await d1().prepare(`UPDATE report_jobs SET status='TIMEOUT',error=?,updated_at=? WHERE id=?`).bind(error, Date.now(), job.id).run();
+      throw new Error(error);
+    }
     poll++;
     context.onStatus?.(`正在轮询同一个 Report ID（第 ${poll} 次，间隔 15 秒）`);
     let result: unknown;

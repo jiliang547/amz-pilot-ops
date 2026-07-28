@@ -55,10 +55,14 @@ function reportArgs(row: Record<string, unknown>, startDate: string, endDate: st
   return { body: { reports: [{ currencyOfView: currency, format: "CSV", periods: [{ datePeriod: { startDate, endDate } }] }] } };
 }
 
-async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCredentials, key: WindowKey, days: number, snapshotDate: string, force = false) {
+async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCredentials, key: WindowKey, days: number, snapshotDate: string, force = false, onStatus?: (text: string) => void) {
+  const window = WINDOWS.find(item => item.key === key)!;
   const endDate = shiftDate(snapshotDate, -1), startDate = shiftDate(endDate, -(days - 1)), now = Date.now();
   const existing = await d1().prepare(`SELECT id,status,attempts,updated_at updatedAt FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(row.id, key, snapshotDate).first<{ id: string; status: string; attempts: number; updatedAt: number }>();
-  if (existing?.status === "COMPLETED" || existing?.status === "RUNNING" || (!force && existing?.status === "FAILED" && (existing.attempts >= 3 || now - existing.updatedAt < 15 * 60_000))) return false;
+  const runningFresh = existing?.status === "RUNNING" && now - existing.updatedAt < 65 * 60_000;
+  if (existing?.status === "COMPLETED") return { windowKey: key, status: "COMPLETED" };
+  if (runningFresh) return { windowKey: key, status: "RUNNING" };
+  if (!force && existing?.status === "FAILED" && (existing.attempts >= 3 || now - existing.updatedAt < 15 * 60_000)) return { windowKey: key, status: "FAILED" };
   const id = existing?.id ?? crypto.randomUUID();
   if (!existing) {
     await d1().prepare(`INSERT INTO report_snapshots(id,user_id,account_id,report_type,window_key,snapshot_date,start_date,end_date,status,attempts,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id, row.user_id, row.id, "campaign", key, snapshotDate, startDate, endDate, "RUNNING", 1, now, now).run();
@@ -67,17 +71,22 @@ async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCred
   }
   try {
     credentials.advertiserAccountId = String(row.advertiser_account_id ?? credentials.advertiserAccountId ?? "") || undefined;
+    onStatus?.(`${window.label}：正在创建报表`);
     const result = await executeReportTool(new AmazonMcpClient(credentials, "DYNAMIC"), "reporting-create_campaign_report", reportArgs(row, startDate, endDate), {
-      userId: String(row.user_id), accountId: String(row.id),
+      userId: String(row.user_id), accountId: String(row.id), timeoutMs: 60 * 60_000,
+      onStatus: text => onStatus?.(`${window.label}：${text}`),
     });
     const payload = combineReportResult(result);
     const reportId = result && typeof result === "object" ? String((result as { reportId?: unknown }).reportId ?? "") : "";
     await d1().prepare(`UPDATE report_snapshots SET status='COMPLETED',report_id=?,metrics_json=?,error=NULL,completed_at=?,updated_at=? WHERE id=?`).bind(reportId || null, JSON.stringify(payload), Date.now(), Date.now(), id).run();
+    onStatus?.(`${window.label}：报表已保存并完成后端汇总`);
+    return { windowKey: key, status: "COMPLETED" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await d1().prepare(`UPDATE report_snapshots SET status='FAILED',error=?,updated_at=? WHERE id=?`).bind(message.slice(0, 1000), Date.now(), id).run();
+    onStatus?.(`${window.label}：生成失败——${message}`);
+    return { windowKey: key, status: "FAILED", error: message };
   }
-  return true;
 }
 
 export async function runDailyReportSnapshots(): Promise<number> {
@@ -88,29 +97,25 @@ export async function runDailyReportSnapshots(): Promise<number> {
     if (local.hour === 0 && local.minute < 15) continue;
     for (const window of WINDOWS) {
       const existing = await d1().prepare(`SELECT status,attempts,updated_at updatedAt FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(row.id, window.key, local.date).first<{ status: string; attempts: number; updatedAt: number }>();
-      if (existing?.status === "COMPLETED" || existing?.status === "RUNNING" || (existing?.status === "FAILED" && (existing.attempts >= 3 || Date.now() - existing.updatedAt < 15 * 60_000))) continue;
+      const runningFresh = existing?.status === "RUNNING" && Date.now() - existing.updatedAt < 65 * 60_000;
+      if (existing?.status === "COMPLETED" || runningFresh || (existing?.status === "FAILED" && (existing.attempts >= 3 || Date.now() - existing.updatedAt < 15 * 60_000))) continue;
       const { credentials } = await accountCredentials(String(row.user_id), String(row.id));
-      return await runSnapshot(row, credentials, window.key, window.days, local.date) ? 1 : 0;
+      const result = await runSnapshot(row, credentials, window.key, window.days, local.date);
+      return result.status === "COMPLETED" ? 1 : 0;
     }
   }
   return 0;
 }
 
-export async function runManualReportSnapshot(userId: string, accountId: string) {
+export async function runManualReportSnapshots(userId: string, accountId: string, onStatus?: (text: string) => void) {
   const row = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>();
   if (!row) throw new Error("店铺不存在");
   if (!row.advertiser_account_id) throw new Error("当前店铺尚未识别 Advertiser Account ID，无法创建报表");
   const snapshotDate = localParts(String(row.timezone ?? "UTC")).date;
-  for (const window of WINDOWS) {
-    const existing = await d1().prepare(`SELECT status FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(accountId, window.key, snapshotDate).first<{ status: string }>();
-    if (existing?.status === "COMPLETED") continue;
-    if (existing?.status === "RUNNING") return { processed: false, windowKey: window.key, status: "RUNNING" };
-    const { credentials } = await accountCredentials(userId, accountId);
-    await runSnapshot(row, credentials, window.key, window.days, snapshotDate, true);
-    const updated = await d1().prepare(`SELECT status,error FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(accountId, window.key, snapshotDate).first<{ status: string; error?: string }>();
-    return { processed: true, windowKey: window.key, status: updated?.status ?? "UNKNOWN", error: updated?.error };
-  }
-  return { processed: false, status: "COMPLETED", allComplete: true };
+  const { credentials } = await accountCredentials(userId, accountId);
+  onStatus?.("已启动四个时间窗口的报表 Skill，将并行创建并持续轮询，最长等待 1 小时");
+  const windows = await Promise.all(WINDOWS.map(window => runSnapshot(row, { ...credentials }, window.key, window.days, snapshotDate, true, onStatus)));
+  return { snapshotDate, windows };
 }
 
 function requestedWindow(message: string): WindowKey | null {
