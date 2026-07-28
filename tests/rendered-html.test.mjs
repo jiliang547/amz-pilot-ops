@@ -164,9 +164,12 @@ test("builds nightly report snapshots, serves a local dashboard, and queries the
   assert.match(snapshots, /modelRounds:\s*0,\s*snapshotPath:\s*true/);
   assert.match(snapshots, /reporting-create_campaign_report/);
   assert.match(scheduler, /runDailyReportSnapshots/);
+  assert.match(snapshots, /runManualReportSnapshot/);
   assert.ok(agent.indexOf("trySavedSnapshotQuery") < agent.indexOf("tryRankedCampaignReport({"));
   assert.match(dashboard, /dashboardData/);
+  assert.match(dashboard, /export async function POST/);
   assert.match(page, /广告数据看板/);
+  assert.match(page, /refreshDashboard/);
   assert.match(schema, /report_snapshots/);
   assert.match(worker, /async scheduled/);
 });

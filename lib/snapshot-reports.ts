@@ -55,10 +55,10 @@ function reportArgs(row: Record<string, unknown>, startDate: string, endDate: st
   return { body: { reports: [{ currencyOfView: currency, format: "CSV", periods: [{ datePeriod: { startDate, endDate } }] }] } };
 }
 
-async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCredentials, key: WindowKey, days: number, snapshotDate: string) {
+async function runSnapshot(row: Record<string, unknown>, credentials: AmazonCredentials, key: WindowKey, days: number, snapshotDate: string, force = false) {
   const endDate = shiftDate(snapshotDate, -1), startDate = shiftDate(endDate, -(days - 1)), now = Date.now();
   const existing = await d1().prepare(`SELECT id,status,attempts,updated_at updatedAt FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(row.id, key, snapshotDate).first<{ id: string; status: string; attempts: number; updatedAt: number }>();
-  if (existing?.status === "COMPLETED" || existing?.status === "RUNNING" || (existing?.status === "FAILED" && (existing.attempts >= 3 || now - existing.updatedAt < 15 * 60_000))) return false;
+  if (existing?.status === "COMPLETED" || existing?.status === "RUNNING" || (!force && existing?.status === "FAILED" && (existing.attempts >= 3 || now - existing.updatedAt < 15 * 60_000))) return false;
   const id = existing?.id ?? crypto.randomUUID();
   if (!existing) {
     await d1().prepare(`INSERT INTO report_snapshots(id,user_id,account_id,report_type,window_key,snapshot_date,start_date,end_date,status,attempts,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id, row.user_id, row.id, "campaign", key, snapshotDate, startDate, endDate, "RUNNING", 1, now, now).run();
@@ -94,6 +94,23 @@ export async function runDailyReportSnapshots(): Promise<number> {
     }
   }
   return 0;
+}
+
+export async function runManualReportSnapshot(userId: string, accountId: string) {
+  const row = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>();
+  if (!row) throw new Error("店铺不存在");
+  if (!row.advertiser_account_id) throw new Error("当前店铺尚未识别 Advertiser Account ID，无法创建报表");
+  const snapshotDate = localParts(String(row.timezone ?? "UTC")).date;
+  for (const window of WINDOWS) {
+    const existing = await d1().prepare(`SELECT status FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(accountId, window.key, snapshotDate).first<{ status: string }>();
+    if (existing?.status === "COMPLETED") continue;
+    if (existing?.status === "RUNNING") return { processed: false, windowKey: window.key, status: "RUNNING" };
+    const { credentials } = await accountCredentials(userId, accountId);
+    await runSnapshot(row, credentials, window.key, window.days, snapshotDate, true);
+    const updated = await d1().prepare(`SELECT status,error FROM report_snapshots WHERE account_id=? AND report_type='campaign' AND window_key=? AND snapshot_date=?`).bind(accountId, window.key, snapshotDate).first<{ status: string; error?: string }>();
+    return { processed: true, windowKey: window.key, status: updated?.status ?? "UNKNOWN", error: updated?.error };
+  }
+  return { processed: false, status: "COMPLETED", allComplete: true };
 }
 
 function requestedWindow(message: string): WindowKey | null {
