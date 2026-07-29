@@ -156,9 +156,9 @@ test("routes campaign ranking questions through backend CSV grouping", async () 
   assert.match(compiled, /哪个\|哪一个\|最高\|最低/);
 });
 test("maintains daily ad facts, refreshes attribution, and computes dashboard windows locally", async () => {
-  const [snapshots, adsApi, scheduler, agent, dashboard, page, schema, worker] = await Promise.all([
+  const [snapshots, adsApi, scheduler, agent, dashboard, page, dashboardView, schema, worker] = await Promise.all([
     source("lib/snapshot-reports.ts"), source("lib/amazon-ads-api.ts"), source("lib/scheduler.ts"), source("lib/agent.ts"),
-    source("app/api/dashboard/route.ts"), source("app/page.tsx"), source("db/schema.ts"), source("worker/index.ts"),
+    source("app/api/dashboard/route.ts"), source("app/page.tsx"), source("app/dashboard-view.tsx"), source("db/schema.ts"), source("worker/index.ts"),
   ]);
   for (const key of ["1d", "7d", "30d", "90d"]) assert.match(snapshots, new RegExp(`key: "${key}"`));
   assert.match(snapshots, /modelRounds:\s*0,\s*snapshotPath:\s*true/);
@@ -188,15 +188,37 @@ test("maintains daily ad facts, refreshes attribution, and computes dashboard wi
   assert.ok(agent.indexOf("trySavedSnapshotQuery") < agent.indexOf("tryRankedCampaignReport({"));
   assert.match(dashboard, /dashboardData/);
   assert.match(dashboard, /export async function POST/);
-  assert.match(page, /广告数据看板/);
+  assert.match(dashboardView, /广告数据看板/);
   assert.match(page, /refreshDashboard/);
-  assert.match(page, /刷新每日数据/);
+  assert.match(dashboardView, /刷新每日数据/);
   assert.match(page, /analyzeDashboard/);
-  assert.match(page, /高销售投放关键词/);
-  assert.match(page, /高花费零订单搜索词/);
+  assert.match(dashboardView, /高销售投放关键词/);
+  assert.match(dashboardView, /高花费零订单搜索词/);
   assert.match(schema, /ad_daily_facts/);
   assert.match(schema, /ad_keyword_daily_facts/);
   assert.match(schema, /ad_search_term_daily_facts/);
   assert.match(schema, /ad_report_syncs/);
   assert.match(worker, /async scheduled/);
+});
+test("renders dashboard as a workspace tab and supports date-based overwrite analysis", async () => {
+  const [page, view, history, anomalyRoute, anomalyService, snapshots, schema] = await Promise.all([
+    source("app/page.tsx"), source("app/dashboard-view.tsx"), source("app/anomaly-history.tsx"),
+    source("app/api/anomalies/route.ts"), source("lib/anomaly-analysis.ts"), source("lib/snapshot-reports.ts"), source("db/schema.ts"),
+  ]);
+  assert.match(page, /dashboardOpen\?"active":""/);
+  assert.match(page, /<DashboardView/);
+  assert.doesNotMatch(page, /modal dashboard-modal/);
+  assert.match(view, /刷新每日数据/);
+  assert.match(view, /三份近15天报表/);
+  assert.match(view, /最近更新/);
+  assert.match(view, /手动刷新/);
+  assert.match(view, />✦ 数据分析</);
+  assert.match(history, /type="date"/);
+  assert.match(history, /amz-analyze-selected/);
+  assert.match(anomalyRoute, /这个数据距离我们太远了，暂时无法分析/);
+  assert.match(anomalyRoute, /date:analysisDate/);
+  assert.match(anomalyService, /date\?: string/);
+  assert.match(snapshots, /triggerType: "manual" \| "automatic"/);
+  assert.match(snapshots, /analysis = null/);
+  assert.match(schema, /triggerType: text\("trigger_type"\)/);
 });

@@ -1,0 +1,1 @@
+ALTER TABLE `ad_report_syncs` ADD `trigger_type` text DEFAULT 'automatic' NOT NULL;

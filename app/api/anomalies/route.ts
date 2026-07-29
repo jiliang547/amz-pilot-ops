@@ -2,64 +2,12 @@ import { assertSameOrigin, requireUser } from "@/lib/auth";
 import { anomalyHistory, runAnomalyAnalysis } from "@/lib/anomaly-analysis";
 import { d1, ensureSchema } from "@/lib/db";
 
-const TABLES = [
-  ["campaign", "ad_daily_facts"],
-  ["keyword", "ad_keyword_daily_facts"],
-  ["searchTerm", "ad_search_term_daily_facts"],
-] as const;
+const TABLES=[["campaign","ad_daily_facts"],["keyword","ad_keyword_daily_facts"],["searchTerm","ad_search_term_daily_facts"]] as const;
+function shiftDate(date:string,days:number){const value=new Date(`${date}T00:00:00Z`);value.setUTCDate(value.getUTCDate()+days);return value.toISOString().slice(0,10)}
+async function owned(userId:string,accountId:string){return d1().prepare(`SELECT id,timezone FROM accounts WHERE id=? AND user_id=?`).bind(accountId,userId).first<{id:string;timezone?:string}>()}
+async function coverage(userId:string,accountId:string){const rows=[];for(const [reportKind,table] of TABLES){const row=await d1().prepare(`SELECT MIN(report_date) minDate,MAX(report_date) maxDate,COUNT(*) rowCount,COUNT(DISTINCT report_date) dateCount FROM ${table} WHERE user_id=? AND account_id=?`).bind(userId,accountId).first<Record<string,unknown>>();rows.push({reportKind,minDate:row?.minDate??null,maxDate:row?.maxDate??null,rowCount:Number(row?.rowCount??0),dateCount:Number(row?.dateCount??0)})}return rows}
+function validDate(value:string){return /^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(`${value}T00:00:00Z`))}
 
-async function owned(userId: string, accountId: string) {
-  return d1().prepare(`SELECT id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first();
-}
+export async function GET(request:Request){try{await ensureSchema();const user=await requireUser(request),url=new URL(request.url),accountId=url.searchParams.get("accountId")??"";if(!accountId)return Response.json({error:"请选择店铺"},{status:400});if(!await owned(user.id,accountId))return Response.json({error:"店铺不存在"},{status:404});const rows=await coverage(user.id,accountId),maxDate=String(rows.find(item=>item.reportKind==="campaign")?.maxDate??"")||null,minDate=maxDate?shiftDate(maxDate,-19):null,selected=url.searchParams.get("date")||maxDate;return Response.json({...await anomalyHistory(user.id,accountId,selected),coverage:rows,analysisRange:{minDate,maxDate}})}catch(error){if(error instanceof Response)return error;return Response.json({error:error instanceof Error?error.message:"异常历史读取失败"},{status:400})}}
 
-async function coverage(userId: string, accountId: string) {
-  const rows = [];
-  for (const [reportKind, table] of TABLES) {
-    const row = await d1().prepare(`SELECT MIN(report_date) minDate,MAX(report_date) maxDate,COUNT(*) rowCount,COUNT(DISTINCT report_date) dateCount FROM ${table} WHERE user_id=? AND account_id=?`).bind(userId, accountId).first<Record<string, unknown>>();
-    rows.push({ reportKind, minDate: row?.minDate ?? null, maxDate: row?.maxDate ?? null, rowCount: Number(row?.rowCount ?? 0), dateCount: Number(row?.dateCount ?? 0) });
-  }
-  return rows;
-}
-
-export async function GET(request: Request) {
-  try {
-    await ensureSchema();
-    const user = await requireUser(request), url = new URL(request.url), accountId = url.searchParams.get("accountId") ?? "";
-    if (!accountId) return Response.json({ error: "请选择店铺" }, { status: 400 });
-    if (!await owned(user.id, accountId)) return Response.json({ error: "店铺不存在" }, { status: 404 });
-    return Response.json({ ...(await anomalyHistory(user.id, accountId, url.searchParams.get("date"))), coverage: await coverage(user.id, accountId) });
-  } catch (error) {
-    if (error instanceof Response) return error;
-    return Response.json({ error: error instanceof Error ? error.message : "异常历史读取失败" }, { status: 400 });
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    assertSameOrigin(request);
-    await ensureSchema();
-    const user = await requireUser(request), body = await request.json() as { accountId?: string };
-    if (!body.accountId) return Response.json({ error: "请选择店铺" }, { status: 400 });
-    if (!await owned(user.id, body.accountId)) return Response.json({ error: "店铺不存在" }, { status: 404 });
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        const send = (event: string, data: unknown) => controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        void (async () => {
-          try {
-            const analysis = await runAnomalyAnalysis(user.id, body.accountId!, { force: true, onStatus: text => send("status", { text }) });
-            send("done", { analysis, ...(await anomalyHistory(user.id, body.accountId!)), coverage: await coverage(user.id, body.accountId!) });
-          } catch (error) {
-            send("error", { message: error instanceof Error ? error.message : "异常分析失败" });
-          } finally {
-            controller.close();
-          }
-        })();
-      },
-    });
-    return new Response(stream, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no" } });
-  } catch (error) {
-    if (error instanceof Response) return error;
-    return Response.json({ error: error instanceof Error ? error.message : "异常分析失败" }, { status: 400 });
-  }
-}
+export async function POST(request:Request){try{assertSameOrigin(request);await ensureSchema();const user=await requireUser(request),body=await request.json() as {accountId?:string;analysisDate?:string};if(!body.accountId)return Response.json({error:"请选择店铺"},{status:400});if(!await owned(user.id,body.accountId))return Response.json({error:"店铺不存在"},{status:404});const maxRow=await d1().prepare(`SELECT MAX(report_date) maxDate FROM ad_daily_facts WHERE user_id=? AND account_id=?`).bind(user.id,body.accountId).first<{maxDate?:string}>(),maxDate=maxRow?.maxDate??"";if(!maxDate)return Response.json({error:"尚无可分析的广告数据"},{status:400});const analysisDate=body.analysisDate||maxDate,minDate=shiftDate(maxDate,-19);if(!validDate(analysisDate))return Response.json({error:"请选择有效日期"},{status:400});if(analysisDate<minDate)return Response.json({error:"这个数据距离我们太远了，暂时无法分析"},{status:400});if(analysisDate>maxDate)return Response.json({error:"当天数据尚未刷新，暂时无法分析"},{status:400});const encoder=new TextEncoder(),stream=new ReadableStream<Uint8Array>({start(controller){const send=(event:string,data:unknown)=>controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));void(async()=>{try{const analysis=await runAnomalyAnalysis(user.id,body.accountId!,{force:true,date:analysisDate,onStatus:text=>send("status",{text})});send("done",{analysis,...await anomalyHistory(user.id,body.accountId!,analysisDate),coverage:await coverage(user.id,body.accountId!),analysisRange:{minDate,maxDate}})}catch(error){send("error",{message:error instanceof Error?error.message:"异常分析失败"})}finally{controller.close()}})()}});return new Response(stream,{headers:{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-cache, no-transform","x-accel-buffering":"no"}})}catch(error){if(error instanceof Response)return error;return Response.json({error:error instanceof Error?error.message:"异常分析失败"},{status:400})}}

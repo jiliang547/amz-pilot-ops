@@ -178,17 +178,17 @@ async function analyzeKind(userId: string, accountId: string, analysisDate: stri
   }
 }
 
-export async function runAnomalyAnalysis(userId: string, accountId: string, options: { force?: boolean; onStatus?: (text: string) => void } = {}) {
+export async function runAnomalyAnalysis(userId: string, accountId: string, options: { force?: boolean; date?: string; onStatus?: (text: string) => void } = {}) {
   const account = await d1().prepare(`SELECT timezone FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<{ timezone?: string }>();
   if (!account) throw new Error("店铺不存在");
-  const analysisDate = localDate(String(account.timezone ?? "UTC")), endDate = shiftDate(analysisDate, -1), startDate = shiftDate(endDate, -14), analyses = [];
+  const today = localDate(String(account.timezone ?? "UTC")), analysisDate = options.date ?? today, endDate = options.date ?? shiftDate(today, -1), startDate = shiftDate(endDate, -14), analyses = [];
   for (const kind of KINDS) analyses.push(await analyzeKind(userId, accountId, analysisDate, startDate, endDate, kind, Boolean(options.force), options.onStatus));
   return { analysisDate, startDate, endDate, status: analyses.every(item => item.status === "COMPLETED") ? "COMPLETED" : "FAILED", analyses };
 }
 
 export async function anomalyHistory(userId: string, accountId: string, selectedDate?: string | null) {
   const datesResult = await d1().prepare(`SELECT DISTINCT analysis_date analysisDate FROM ad_anomaly_analyses WHERE user_id=? AND account_id=? ORDER BY analysis_date DESC LIMIT 120`).bind(userId, accountId).all<{ analysisDate: string }>();
-  const dates = datesResult.results.map(item => item.analysisDate), analysisDate = selectedDate && dates.includes(selectedDate) ? selectedDate : dates[0] ?? null;
+  const dates = datesResult.results.map(item => item.analysisDate), analysisDate = selectedDate || dates[0] || null;
   if (!analysisDate) return { dates, analysisDate: null, analyses: [] };
   const result = await d1().prepare(`SELECT report_kind reportKind,start_date startDate,end_date endDate,model_name modelName,status,summary,anomalies_json anomaliesJson,error,completed_at completedAt FROM ad_anomaly_analyses WHERE user_id=? AND account_id=? AND analysis_date=? ORDER BY CASE report_kind WHEN 'campaign' THEN 1 WHEN 'keyword' THEN 2 ELSE 3 END`).bind(userId, accountId, analysisDate).all<Record<string, unknown>>();
   return {

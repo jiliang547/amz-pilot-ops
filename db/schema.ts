@@ -46,7 +46,7 @@ export const adSearchTermDailyFacts = sqliteTable("ad_search_term_daily_facts", 
 }, t => [uniqueIndex("ad_search_term_daily_facts_key_idx").on(t.accountId, t.reportDate, t.campaignId, t.adGroupId, t.keywordId, t.searchTerm), index("ad_search_term_daily_facts_range_idx").on(t.userId, t.accountId, t.reportDate), index("ad_search_term_daily_facts_sync_idx").on(t.accountId, t.syncId)]);
 export const adReportSyncs = sqliteTable("ad_report_syncs", {
   id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  syncDate: text("sync_date").notNull(), reportKind: text("report_kind").notNull(), mode: text("mode").notNull(), startDate: text("start_date").notNull(), endDate: text("end_date").notNull(), reportId: text("report_id"),
+  syncDate: text("sync_date").notNull(), reportKind: text("report_kind").notNull(), mode: text("mode").notNull(), triggerType: text("trigger_type").notNull().default("automatic"), startDate: text("start_date").notNull(), endDate: text("end_date").notNull(), reportId: text("report_id"),
   status: text("status").notNull(), rowsUpserted: integer("rows_upserted").notNull().default(0), error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(), completedAt: integer("completed_at"),
 }, t => [uniqueIndex("ad_report_syncs_account_date_kind_idx").on(t.accountId, t.syncDate, t.reportKind), index("ad_report_syncs_status_idx").on(t.userId, t.accountId, t.status, t.updatedAt)]);
 export const adAnomalyAnalyses = sqliteTable("ad_anomaly_analyses", {
