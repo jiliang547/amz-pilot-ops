@@ -143,7 +143,7 @@ function parseModelJson(content: string): { summary: string; anomalies: StoredAn
 async function analyzeKind(userId: string, accountId: string, analysisDate: string, startDate: string, endDate: string, kind: AnalysisKind, force: boolean, onStatus?: (text: string) => void) {
   const existing = await d1().prepare(`SELECT id,status,model_name modelName,summary,anomalies_json anomaliesJson FROM ad_anomaly_analyses WHERE account_id=? AND analysis_date=? AND report_kind=?`).bind(accountId, analysisDate, kind).first<Record<string, unknown>>();
   if (!force && existing?.status === "COMPLETED") return { reportKind: kind, status: "COMPLETED", modelName: existing.modelName, summary: existing.summary, anomalies: JSON.parse(String(existing.anomaliesJson ?? "[]")) as StoredAnomaly[], reused: true };
-  const id = String(existing?.id ?? crypto.randomUUID()), now = Date.now(), configured = await modelConfigForUser(userId), config = { ...configured, modelName: "mimo-v2.5" };
+  const id = String(existing?.id ?? crypto.randomUUID()), now = Date.now(), config = await modelConfigForUser(userId);
   const prompt = `这是亚马逊${LABELS[kind]}的广告报告，请帮我分析其中是否有数据异常以及异常的原因`;
   await d1().prepare(
     `INSERT INTO ad_anomaly_analyses(id,user_id,account_id,analysis_date,report_kind,start_date,end_date,model_name,status,prompt,created_at,updated_at)
@@ -168,7 +168,7 @@ async function analyzeKind(userId: string, accountId: string, analysisDate: stri
     const data = await response.json() as { choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null } }> };
     const message = data.choices?.[0]?.message, content = message?.content || message?.reasoning_content || "";
     let parsed: { summary: string; anomalies: StoredAnomaly[] };
-    try { parsed = parseModelJson(content); } catch { parsed = { summary: content.slice(0, 2000) || "MiMo 分析完成，但返回了非结构化内容", anomalies: [{ objectName: `${LABELS[kind]}整体`, severity: "medium", anomaly: "模型返回非结构化异常结论", reason: content.slice(0, 1200) || "模型未返回可解析内容", evidence: "已保存原始模型响应，后续分析会继续要求结构化 JSON" }] }; }
+    try { parsed = parseModelJson(content); } catch { parsed = { summary: content.slice(0, 2000) || "模型分析完成，但返回了非结构化内容", anomalies: [{ objectName: `${LABELS[kind]}整体`, severity: "medium", anomaly: "模型返回非结构化异常结论", reason: content.slice(0, 1200) || "模型未返回可解析内容", evidence: "已保存原始模型响应，后续分析会继续要求结构化 JSON" }] }; }
     await d1().prepare(`UPDATE ad_anomaly_analyses SET status='COMPLETED',summary=?,anomalies_json=?,raw_response=?,error=NULL,completed_at=?,updated_at=? WHERE id=?`).bind(parsed.summary, JSON.stringify(parsed.anomalies), content.slice(0, 50000), Date.now(), Date.now(), id).run();
     return { reportKind: kind, status: "COMPLETED", modelName: config.modelName, ...parsed, reused: false };
   } catch (error) {

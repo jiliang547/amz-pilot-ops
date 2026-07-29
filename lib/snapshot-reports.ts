@@ -17,7 +17,7 @@ const WINDOWS: Array<{ key: WindowKey; days: number; label: string }> = [
 const REPORT_KINDS: AmazonAdsReportKind[] = ["campaign", "keyword", "searchTerm"];
 const REPORT_LABELS: Record<AmazonAdsReportKind, string> = { campaign: "Campaign / Ad Group", keyword: "投放关键词", searchTerm: "客户搜索词" };
 const FACT_TABLES: Record<AmazonAdsReportKind, string> = { campaign: "ad_daily_facts", keyword: "ad_keyword_daily_facts", searchTerm: "ad_search_term_daily_facts" };
-const ROLLING_ATTRIBUTION_DAYS = 15, RAW_REPORT_RETENTION_DAYS = 30;
+const ROLLING_ATTRIBUTION_DAYS = 15, RAW_REPORT_RETENTION_DAYS = 30, REPORT_REFRESH_TIMEOUT_MS = 3 * 60 * 60_000;
 
 function localParts(timezone: string, now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(now);
@@ -84,7 +84,7 @@ async function cleanupOldRawReports(userId: string, accountId: string) {
 }
 
 type KindSyncResult = { reportKind: AmazonAdsReportKind; syncDate: string; mode: "initial" | "rolling"; startDate: string; endDate: string; status: string; reportId?: string; rowsUpserted?: number; error?: string };
-async function runReportKindSync(row: Record<string, unknown>, credentials: AmazonCredentials, client: AmazonAdsApiClient, kind: AmazonAdsReportKind, force: boolean, onStatus?: (text: string) => void, timeoutMs = 60 * 60_000, forceInitial = false, triggerType: "manual" | "automatic" = "automatic"): Promise<KindSyncResult> {
+async function runReportKindSync(row: Record<string, unknown>, credentials: AmazonCredentials, client: AmazonAdsApiClient, kind: AmazonAdsReportKind, force: boolean, onStatus?: (text: string) => void, timeoutMs = REPORT_REFRESH_TIMEOUT_MS, forceInitial = false, triggerType: "manual" | "automatic" = "automatic"): Promise<KindSyncResult> {
   const userId = String(row.user_id), accountId = String(row.id), syncDate = localParts(String(row.timezone ?? "UTC")).date, endDate = shiftDate(syncDate, -1), initialStart = shiftDate(endDate, -89), table = FACT_TABLES[kind];
   const coverage = await d1().prepare(`SELECT MIN(report_date) minDate,COUNT(*) rowCount FROM ${table} WHERE user_id=? AND account_id=?`).bind(userId, accountId).first<{ minDate?: string; rowCount: number }>();
   const completedInitial = await d1().prepare(`SELECT id FROM ad_report_syncs WHERE user_id=? AND account_id=? AND report_kind=? AND mode='initial' AND status='COMPLETED' LIMIT 1`).bind(userId, accountId, kind).first<{ id: string }>();
@@ -139,10 +139,10 @@ export async function runDailyReportSnapshots(): Promise<number> {
 
 export async function runManualReportSnapshots(userId: string, accountId: string, onStatus?: (text: string) => void, options: { forceInitial?: boolean } = {}) {
   const row = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>(); if (!row) throw new Error("店铺不存在");
-  const { credentials } = await accountCredentials(userId, accountId), client = new AmazonAdsApiClient(credentials), deadline = Date.now() + 60 * 60_000, reports: KindSyncResult[] = [];
-  onStatus?.("开始同步 Campaign、投放关键词、客户搜索词三类每日数据；首次回填会自动分段，整体最长等待 1 小时");
-  for (const kind of REPORT_KINDS) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { reports.push({ reportKind: kind, syncDate: localParts(String(row.timezone ?? "UTC")).date, mode: "rolling", startDate: "", endDate: "", status: "FAILED", error: "三类数据整体等待已达到1小时" }); continue; } reports.push(await runReportKindSync(row, credentials, client, kind, true, onStatus, remainingMs, Boolean(options.forceInitial), "manual")); }
-  const completed = reports.every(item => item.status === "COMPLETED"), analysis = null;
+  const { credentials } = await accountCredentials(userId, accountId), client = new AmazonAdsApiClient(credentials), deadline = Date.now() + REPORT_REFRESH_TIMEOUT_MS, reports: KindSyncResult[] = [];
+  onStatus?.("开始同步 Campaign、投放关键词、客户搜索词三类每日数据；首次回填会自动分段，整体最长等待 3 小时");
+  for (const kind of REPORT_KINDS) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { reports.push({ reportKind: kind, syncDate: localParts(String(row.timezone ?? "UTC")).date, mode: "rolling", startDate: "", endDate: "", status: "FAILED", error: "三类数据整体等待已达到3小时" }); continue; } reports.push(await runReportKindSync(row, credentials, client, kind, true, onStatus, remainingMs, Boolean(options.forceInitial), "manual")); }
+  const completed = reports.every(item => item.status === "COMPLETED"), analysis = completed ? await runAnomalyAnalysis(userId, accountId, { force: true, onStatus }) : null;
   if (completed) { await d1().prepare(`DELETE FROM report_snapshots WHERE account_id=?`).bind(accountId).run(); await cleanupOldRawReports(userId, accountId); }
   return { syncDate: localParts(String(row.timezone ?? "UTC")).date, status: completed ? "COMPLETED" : "FAILED", reports, analysis, windows: reports.map(item => ({ windowKey: item.reportKind, status: item.status, error: item.error })) };
 }

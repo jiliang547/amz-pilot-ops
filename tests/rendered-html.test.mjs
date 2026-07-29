@@ -219,6 +219,8 @@ test("renders dashboard as a workspace tab and supports date-based overwrite ana
   assert.match(anomalyRoute, /date:analysisDate/);
   assert.match(anomalyService, /date\?: string/);
   assert.match(snapshots, /triggerType: "manual" \| "automatic"/);
-  assert.match(snapshots, /analysis = null/);
+  assert.match(snapshots, /REPORT_REFRESH_TIMEOUT_MS = 3 \* 60 \* 60_000/);
+  assert.match(snapshots, /analysis = completed \? await runAnomalyAnalysis/);
+  assert.doesNotMatch(anomalyService, /modelName: "mimo-v2\.5"/);
   assert.match(schema, /triggerType: text\("trigger_type"\)/);
 });
