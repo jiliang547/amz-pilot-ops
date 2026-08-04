@@ -5,6 +5,7 @@ import RankTrackerView from "./rank-tracker-view";
 import ListingView from "./listing-view";
 import ImageStudio from "./image-studio";
 import { ReviewsView } from "./reviews-view";
+import StoreManagerView from "./store-manager-view";
 import TokenUsageButton from "./token-usage-ui";
 import {
   AdminModelManager,
@@ -153,6 +154,7 @@ export default function Home() {
     [listingOpen, setListingOpen] = useState(false),
     [imageOpen, setImageOpen] = useState(false),
     [reviewsOpen, setReviewsOpen] = useState(false),
+    [storeOpen, setStoreOpen] = useState(false),
     [dashboard, setDashboard] = useState<DashboardData | null>(null),
     [dashboardLoading, setDashboardLoading] = useState(false),
     [dashboardStatus, setDashboardStatus] = useState(""),
@@ -190,6 +192,7 @@ export default function Home() {
     }
   }
   function loadDashboard() {
+    setStoreOpen(false);
     setRankOpen(false);
     setListingOpen(false);
     setImageOpen(false);
@@ -658,16 +661,30 @@ export default function Home() {
         </div>
         <nav className="nav-list">
           <button
-            className={`nav-item ${!dashboardOpen && !rankOpen && !listingOpen && !imageOpen && !reviewsOpen ? "active" : ""}`}
+            className={`nav-item ${!dashboardOpen && !rankOpen && !listingOpen && !imageOpen && !reviewsOpen && !storeOpen ? "active" : ""}`}
             onClick={() => {
               setDashboardOpen(false);
               setRankOpen(false);
               setListingOpen(false);
               setImageOpen(false);
               setReviewsOpen(false);
+              setStoreOpen(false);
             }}
           >
             <span className="nav-icon">✦</span>智能广告
+          </button>
+          <button
+            className={`nav-item ${storeOpen ? "active" : ""}`}
+            onClick={() => {
+              setDashboardOpen(false);
+              setRankOpen(false);
+              setListingOpen(false);
+              setImageOpen(false);
+              setReviewsOpen(false);
+              setStoreOpen(true);
+            }}
+          >
+            <span className="nav-icon">▣</span>店铺管理
           </button>
           <button
             className="nav-item"
@@ -677,6 +694,7 @@ export default function Home() {
               setListingOpen(false);
               setImageOpen(true);
               setReviewsOpen(false);
+              setStoreOpen(false);
             }}
           >
             <span className="nav-icon">◇</span>AI 生图
@@ -690,6 +708,7 @@ export default function Home() {
               setListingOpen(true);
               setImageOpen(false);
               setReviewsOpen(false);
+              setStoreOpen(false);
             }}
           >
             <span className="nav-icon">T</span>Listing 文案
@@ -702,6 +721,7 @@ export default function Home() {
               setListingOpen(false);
               setImageOpen(false);
               setReviewsOpen(false);
+              setStoreOpen(false);
             }}
           >
             <span className="nav-icon">#</span>关键词排名
@@ -720,6 +740,7 @@ export default function Home() {
               setListingOpen(false);
               setImageOpen(false);
               setReviewsOpen(true);
+              setStoreOpen(false);
             }}
           >
             <span className="nav-icon">☰</span>获取评论
@@ -767,7 +788,9 @@ export default function Home() {
             <span>运营工作台</span>
             <b>/</b>
             <strong>
-              {imageOpen
+              {storeOpen
+                ? "店铺管理"
+                : imageOpen
                 ? "AI 生图"
                 : reviewsOpen
                   ? "获取评论"
@@ -810,11 +833,12 @@ export default function Home() {
         {listingOpen && <ListingView />}
         {imageOpen && <ImageStudio />}
         {reviewsOpen && <ReviewsView notify={notify} />}
+        {storeOpen && <StoreManagerView />}
         <div
           className="content"
           style={{
             display:
-              rankOpen || listingOpen || imageOpen || reviewsOpen
+              rankOpen || listingOpen || imageOpen || reviewsOpen || storeOpen
                 ? "none"
                 : undefined,
           }}

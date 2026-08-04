@@ -581,6 +581,18 @@ export const approvals = sqliteTable("approvals", {
   createdAt: integer("created_at").notNull(),
   executedAt: integer("executed_at"),
 });
+export const spApiSettings = sqliteTable("sp_api_settings", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  encryptedCredentials: text("encrypted_credentials").notNull(),
+  region: text("region").notNull(),
+  marketplaceId: text("marketplace_id").notNull(),
+  marketplaceName: text("marketplace_name").notNull(),
+  countryCode: text("country_code").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
 export const tasks = sqliteTable("tasks", {
   id: text("id").primaryKey(),
   userId: text("user_id").notNull(),
