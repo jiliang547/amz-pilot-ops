@@ -1,2 +1,34 @@
-import { d1,ensureSchema } from "./db";import { planAgent } from "./agent";import { runDailyReportSnapshots } from "./snapshot-reports";
-export async function runDueTasks(){await ensureSchema();let processed=0;const due=await d1().prepare(`SELECT * FROM tasks WHERE status='active' AND next_run_at<=? ORDER BY next_run_at LIMIT 20`).bind(Date.now()).all<any>();for(const task of due.results){const claimed=await d1().prepare(`UPDATE tasks SET status='running' WHERE id=? AND status='active'`).bind(task.id).run();if(!claimed.meta.changes)continue;const runId=crypto.randomUUID();try{await d1().prepare(`INSERT INTO task_runs(id,task_id,status,started_at) VALUES(?,?,?,?)`).bind(runId,task.id,"running",Date.now()).run();const result=await planAgent(task.user_id,task.account_id,task.prompt,undefined,undefined,task.prompt);let next=task.next_run_at+(task.schedule_type==="weekly"?7:1)*86400000;if(task.schedule_type==="weekday")while([0,6].includes(new Date(next+8*3600000).getUTCDay()))next+=86400000;await d1().batch([d1().prepare(`UPDATE tasks SET status='active',last_run_at=?,next_run_at=? WHERE id=?`).bind(Date.now(),next,task.id),d1().prepare(`UPDATE task_runs SET status=?,detail=?,finished_at=? WHERE id=?`).bind(result.type,JSON.stringify(result).slice(0,50000),Date.now(),runId)]);processed++;}catch(e){await d1().batch([d1().prepare(`UPDATE tasks SET status='active',next_run_at=? WHERE id=?`).bind(Date.now()+15*60000,task.id),d1().prepare(`UPDATE task_runs SET status='failed',detail=?,finished_at=? WHERE id=?`).bind(e instanceof Error?e.message:"failed",Date.now(),runId)]);}}processed+=await runDailyReportSnapshots();return processed;}
+import { d1, ensureSchema } from "./db";
+import { planAgent } from "./agent";
+import { runDailyReportSnapshots } from "./snapshot-reports";
+import { purgeExpiredAgentLogs } from "./agent-logs";
+
+export async function runDueTasks() {
+  await ensureSchema();
+  await purgeExpiredAgentLogs();
+  let processed = 0;
+  const due = await d1().prepare(`SELECT * FROM tasks WHERE status='active' AND next_run_at<=? ORDER BY next_run_at LIMIT 20`).bind(Date.now()).all<any>();
+  for (const task of due.results) {
+    const claimed = await d1().prepare(`UPDATE tasks SET status='running' WHERE id=? AND status='active'`).bind(task.id).run();
+    if (!claimed.meta.changes) continue;
+    const runId = crypto.randomUUID();
+    try {
+      await d1().prepare(`INSERT INTO task_runs(id,task_id,status,started_at) VALUES(?,?,?,?)`).bind(runId, task.id, "running", Date.now()).run();
+      const result = await planAgent(task.user_id, task.account_id, task.prompt, undefined, undefined, task.prompt);
+      let next = task.next_run_at + (task.schedule_type === "weekly" ? 7 : 1) * 86400000;
+      if (task.schedule_type === "weekday") while ([0, 6].includes(new Date(next + 8 * 3600000).getUTCDay())) next += 86400000;
+      await d1().batch([
+        d1().prepare(`UPDATE tasks SET status='active',last_run_at=?,next_run_at=? WHERE id=?`).bind(Date.now(), next, task.id),
+        d1().prepare(`UPDATE task_runs SET status=?,detail=?,finished_at=? WHERE id=?`).bind(result.type, JSON.stringify(result).slice(0, 50000), Date.now(), runId),
+      ]);
+      processed++;
+    } catch (error) {
+      await d1().batch([
+        d1().prepare(`UPDATE tasks SET status='active',next_run_at=? WHERE id=?`).bind(Date.now() + 15 * 60000, task.id),
+        d1().prepare(`UPDATE task_runs SET status='failed',detail=?,finished_at=? WHERE id=?`).bind(error instanceof Error ? error.message : "failed", Date.now(), runId),
+      ]);
+    }
+  }
+  processed += await runDailyReportSnapshots();
+  return processed;
+}
