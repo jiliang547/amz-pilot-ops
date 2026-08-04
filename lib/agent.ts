@@ -5,6 +5,7 @@ import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./ama
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
 import { executeReportTool } from "./report-jobs";
 import type { ActiveSkill } from "./custom-skills";
+import { finishAgentLog, startAgentLog, writeAgentLog } from "./agent-logs";
 
 // Custom Skills may explicitly request the MCP protocol's tools/list method.
 // Expose it as a local read-only adapter so the model can inspect the already
@@ -77,14 +78,16 @@ async function callReadTool(client: AmazonMcpClient, name: string, args: Record<
   return client.callTool(name, args);
 }
 
-export async function planAgent(
+async function planAgentCore(
   userId: string,
   accountId: string | undefined,
   message: ModelContent,
   onStatus?: (text: string) => void,
   skill?: ActiveSkill,
   plainMessage?: string,
+  logRunId?: string,
 ) {
+  const log = (event: string, data: Record<string, unknown> = {}) => logRunId ? writeAgentLog({ userId, agent: "ads", runId: logRunId, event, accountId: accountId ?? undefined, ...data } as Parameters<typeof writeAgentLog>[0]) : Promise.resolve();
   if (!skill) {
     const localAnswer = tryLocalConversation(plainMessage);
     if (localAnswer) {
@@ -125,6 +128,7 @@ export async function planAgent(
       ? `正在按实操规则分析，并提供 ${tools.length} 个实时 MCP 工具`
       : `正在基于第 ${round - 1} 轮真实查询结果继续分析`);
     const decision = await decide(userId, messages, tools, skill, accountContextBlock(row));
+    await log("model.decision", { round, output: { content: decision.content, toolCalls: decision.toolCalls.map(call => ({ name: call.function.name, arguments: call.function.arguments })) } });
     if (!decision.toolCalls.length) {
       let content = decision.content.trim();
       if (!content) throw new Error("模型没有返回回答或工具调用");
@@ -160,6 +164,7 @@ export async function planAgent(
       }
       const cached = resultCache.get(key);
       onStatus?.(cached === undefined ? `正在调用 ${item.tool.name}` : `正在复用本轮已取得的 ${item.tool.name} 结果`);
+      await log("tool.start", { round, toolName: item.tool.name, input: item.args, status: "running" });
       let rawResult: unknown;
       try {
         rawResult = cached === undefined
@@ -174,13 +179,34 @@ export async function planAgent(
           instruction: "The MCP call failed. Re-read the live tool schema, correct only unsupported or missing arguments, and continue the same business request. Do not require an object API ID for an account-level report question.",
         }) });
         onStatus?.(`MCP ${item.tool.name} 调用失败，Agent 正在根据实时 Schema 自动修正参数`);
+        await log("tool.error", { round, toolName: item.tool.name, input: item.args, output: message, status: "failure" });
         continue;
       }
       if (cached === undefined) resultCache.set(key, rawResult);
       await d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), userId, row.id, "tool.read", item.tool.name, JSON.stringify(item.args).slice(0, 12000), "success", Date.now()).run();
       const result = item.tool.name.startsWith("reporting-") ? compactReportForModel(rawResult) : rawResult;
       const serialized = JSON.stringify(result) || "null";
+      await log("tool.result", { round, toolName: item.tool.name, input: item.args, output: result, status: "success" });
       messages.push({ role: "tool", tool_call_id: item.call.id, name: item.tool.name, content: serialized.length > 450_000 ? `${serialized.slice(0, 450_000)}\n[工具结果已在 450000 字符处截断；请使用汇总字段回答]` : serialized });
     }
+  }
+}
+
+export async function planAgent(
+  userId: string,
+  accountId: string | undefined,
+  message: ModelContent,
+  onStatus?: (text: string) => void,
+  skill?: ActiveSkill,
+  plainMessage?: string,
+) {
+  const runId = await startAgentLog(userId, "ads", message, accountId);
+  try {
+    const result = await planAgentCore(userId, accountId, message, onStatus, skill, plainMessage, runId);
+    await finishAgentLog(userId, "ads", runId, result.type, result, result.accountId);
+    return result;
+  } catch (error) {
+    await finishAgentLog(userId, "ads", runId, "failure", error instanceof Error ? error.message : String(error), accountId);
+    throw error;
   }
 }

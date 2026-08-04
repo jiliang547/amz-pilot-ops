@@ -4,6 +4,7 @@ import { recordTokenUsage, type ProviderUsage } from "./token-usage";
 import { endpointById, executeSpApiEndpoint, exploreSpApiCatalog, loadSpApiConnection, SpApiClient } from "./sp-api";
 import { getReplenishmentSnapshot } from "./store-replenishment";
 import { getFinancialSummary } from "./store-finance";
+import { finishAgentLog, startAgentLog, writeAgentLog } from "./agent-logs";
 
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type AgentMessage = { role: "user" | "assistant" | "tool"; content: string; tool_call_id?: string; name?: string; tool_calls?: ToolCall[] };
@@ -98,7 +99,8 @@ async function createApproval(userId: string, endpoint: string, parameters: Reco
   return { id, summary, toolName: "sp_api_execute", args: { endpoint, parameters }, actionCount: 1 };
 }
 
-export async function runStoreAgent(userId: string, prompt: string, status: (text: string) => void = () => {}) {
+async function runStoreAgentCore(userId: string, prompt: string, status: (text: string) => void = () => {}, logRunId?: string) {
+  const log = (event: string, data: Record<string, unknown> = {}) => logRunId ? writeAgentLog({ userId, agent: "store", runId: logRunId, event, ...data } as Parameters<typeof writeAgentLog>[0]) : Promise.resolve();
   const connection = await loadSpApiConnection(userId);
   const client = new SpApiClient(connection);
   const messages: AgentMessage[] = [{ role: "user", content: prompt }];
@@ -107,12 +109,15 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
   for (let round = 1; round <= 20; round++) {
     status(`店铺 Agent 第 ${round}/20 轮：正在思考并选择 SP-API 工具`);
     const decision = await modelReply(userId, messages);
+    await log("model.decision", { round, output: { content: decision.content, toolCalls: decision.toolCalls.map(call => ({ name: call.function.name, arguments: call.function.arguments })) } });
     if (!decision.toolCalls.length) {
       if (latestEvidence && decision.content) {
         status("正在复核结果是否真正回答了问题");
         let review: { satisfied: boolean; reason: string; retryHint: string };
         try {
+          await log("result.review.start", { round, toolName: latestEvidence.toolName, input: { prompt, proposedAnswer: decision.content }, status: "running" });
           review = await reviewStoreResult(userId, prompt, latestEvidence.toolName, latestEvidence.result, decision.content);
+          await log("result.review.finish", { round, toolName: latestEvidence.toolName, output: review, status: review.satisfied ? "success" : "retry" });
         } catch {
           review = { satisfied: true, reason: "", retryHint: "" };
           status("语义复核服务暂不可用，继续交付已有结果");
@@ -135,6 +140,7 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
       seen.set(signature, count);
       if (count >= 3) throw new Error(`店铺 Agent 连续重复同一工具调用 3 次：${call.function.name}`);
       status(`正在调用 ${call.function.name}`);
+      await log("tool.start", { round, toolName: call.function.name, input: args, status: "running" });
       let result: unknown;
       try {
         if (call.function.name === "sp_api_explore_catalog") result = exploreSpApiCatalog(args);
@@ -157,8 +163,10 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
         } else throw new Error(`未知工具：${call.function.name}`);
       } catch (error) {
         result = { isError: true, error: error instanceof Error ? error.message : String(error), instruction: "请修正 Endpoint ID 或参数后继续尝试，不要直接放弃。" };
+        await log("tool.error", { round, toolName: call.function.name, input: args, output: result, status: "failure" });
       }
       const serialized = JSON.stringify(result);
+      await log("tool.result", { round, toolName: call.function.name, input: args, output: result, status: result && typeof result === "object" && (result as { isError?: boolean }).isError ? "failure" : "success" });
       if (!(result && typeof result === "object" && (result as { isError?: boolean }).isError)) {
         latestEvidence = { toolName: call.function.name, result: serialized };
       }
@@ -166,4 +174,16 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
     }
   }
   throw new Error("店铺 MCP Agent exceeded the maximum of 20 reasoning rounds");
+}
+
+export async function runStoreAgent(userId: string, prompt: string, status: (text: string) => void = () => {}) {
+  const runId = await startAgentLog(userId, "store", prompt);
+  try {
+    const result = await runStoreAgentCore(userId, prompt, status, runId);
+    await finishAgentLog(userId, "store", runId, result.type, result);
+    return result;
+  } catch (error) {
+    await finishAgentLog(userId, "store", runId, "failure", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }
