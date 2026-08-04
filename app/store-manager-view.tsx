@@ -40,9 +40,13 @@ export default function StoreManagerView() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [approval, setApproval] = useState<Approval>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { void loadSettings(); }, []);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [messages, status]);
+  useEffect(() => {
+    const thread = threadRef.current;
+    if (thread) thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
+  }, [messages, status]);
 
   async function loadSettings() {
     const response = await fetch("/api/store/settings");
@@ -118,27 +122,32 @@ export default function StoreManagerView() {
   return (
     <div className="store-view">
       <section className="store-hero">
-        <div>
+        <div className="store-hero-copy">
           <p className="eyebrow"><span /> AMAZON SP-API · MCP AGENT</p>
           <h1>店铺管理</h1>
           <p>直接询问库存、订单、Listing、财务与物流问题，Agent 会检索真实 SP-API 端点后执行。</p>
         </div>
-        <div className={`store-connection ${settings.configured ? "connected" : ""}`}>
-          <b>{settings.configured ? "SP-API 已连接" : "尚未连接 SP-API"}</b>
+        <div className={`store-connection health-card ${settings.configured ? "connected" : ""}`}>
+          <div className="store-connection-head"><span>连接状态</span><b>{settings.configured ? "实时" : "等待连接"}</b></div>
+          <div className="store-connection-main"><i className={settings.configured ? "online" : "offline"} /><strong>{settings.configured ? "SP-API 已连接" : "尚未连接 SP-API"}</strong></div>
           <span>{settings.configured ? `${settings.marketplaceName} · ${settings.region}` : "配置三项 Amazon 授权密钥后开始"}</span>
-          <button onClick={() => setSettingsOpen(true)}>{settings.configured ? "更新密钥" : "配置密钥"}</button>
+          <button onClick={() => setSettingsOpen(true)}>{settings.configured ? "更新密钥" : "配置密钥"}<em>→</em></button>
         </div>
       </section>
 
       <section className="store-grid">
         <div className="store-chat-card">
-          <div className="store-card-head"><div><strong>店铺 Copilot</strong><span>{busy ? status : settings.configured ? "可以开始提问" : "等待连接"}</span></div></div>
-          <div className="store-quick-actions">
-            <button disabled={busy} onClick={runInventory}>查看库存与补货建议</button>
-            <button disabled={busy} onClick={() => setInput("查询最近 7 天的订单与销量概况")}>近 7 天订单</button>
-            <button disabled={busy} onClick={() => setInput("找出当前库存不足、最需要关注的 SKU")}>库存风险</button>
+          <div className="store-card-head">
+            <div className="store-card-title"><div className="store-ai-orb">✦</div><div><strong>店铺 Copilot</strong><span>{busy ? status : settings.configured ? "模型与 SP-API MCP 已就绪" : "等待连接"}</span></div></div>
+            <span className="store-live-pill"><i />实时</span>
           </div>
-          <div className="store-chat-thread">
+          <div className="store-quick-actions">
+            <span>快速开始</span>
+            <button className="primary" disabled={busy} onClick={runInventory}><b>▣</b>库存与补货建议 <em>→</em></button>
+            <button disabled={busy} onClick={() => setInput("查询最近 7 天的订单与销量概况")}><b>◷</b>近 7 天订单</button>
+            <button disabled={busy} onClick={() => setInput("找出当前库存不足、最需要关注的 SKU")}><b>!</b>库存风险</button>
+          </div>
+          <div className="store-chat-thread" ref={threadRef}>
             {!messages.length && <div className="store-empty"><b>像运营人员一样直接提问</b><span>例如：“当前有哪些 SKU 快断货了？”或“查一下订单 123-1234567-1234567 的状态”</span></div>}
             {messages.map(message => <div key={message.id} className={`store-message ${message.role}`}><span>{message.role === "user" ? "你" : "AI"}</span><pre>{message.text}</pre></div>)}
             {approval && <div className="store-approval"><b>需要人工确认</b><p>{approval.summary}</p><button disabled={busy} onClick={approve}>确认并执行</button></div>}
@@ -146,22 +155,22 @@ export default function StoreManagerView() {
           </div>
           <div className="store-composer">
             <textarea value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder="输入店铺运营问题，Enter 发送…" />
-            <button disabled={busy || !input.trim()} onClick={send}>{busy ? "执行中" : "发送"}</button>
+            <button className="store-send" disabled={busy || !input.trim()} onClick={send}>{busy ? "执行中" : "发送"}<span>↑</span></button>
           </div>
           {status && <div className="store-status">{busy && <i />} {status}</div>}
         </div>
 
         <aside className="store-side-card">
-          <strong>补货模型</strong>
+          <div className="store-side-heading"><div className="store-side-icon">↗</div><div><strong>补货模型</strong><span>Inventory health</span></div></div>
           <p>综合短期与长期销售速度，维持 150 天目标库存。</p>
-          <code>日销量 = ((7天销量÷7) + (30天销量÷30)) ÷ 2</code>
-          <code>建议补货 = max(0, 日销量×150 - 当前库存)</code>
-          {snapshot && <div className="store-totals"><span><b>{snapshot.totals.skuCount}</b>SKU</span><span><b>{snapshot.totals.inventory}</b>当前库存</span><span><b>{snapshot.totals.recommendedReplenishment}</b>建议补货</span></div>}
+          <div className="store-formula"><span>日销量</span><code>((7天 ÷ 7) + (30天 ÷ 30)) ÷ 2</code></div>
+          <div className="store-formula"><span>建议补货</span><code>max(0, 日销量 × 150 - 库存)</code></div>
+          {snapshot && <div className="store-totals"><span><b>{snapshot.totals.skuCount}</b><small>SKU</small></span><span><b>{snapshot.totals.inventory}</b><small>当前库存</small></span><span><b>{snapshot.totals.recommendedReplenishment}</b><small>建议补货</small></span></div>}
         </aside>
       </section>
 
       {snapshot && <section className="store-table-card">
-        <div className="store-table-head"><div><strong>库存与补货建议</strong><span>{snapshot.marketplace.name} · {new Date(snapshot.generatedAt).toLocaleString()}</span></div><button onClick={runInventory} disabled={busy}>刷新</button></div>
+        <div className="store-table-head"><div><div className="store-table-title"><strong>库存与补货建议</strong><span className="store-table-badge">{snapshot.totals.skuCount} 个 SKU</span></div><span>{snapshot.marketplace.name} · {new Date(snapshot.generatedAt).toLocaleString()}</span></div><button onClick={runInventory} disabled={busy}>↻ 刷新</button></div>
         <div className="store-table-wrap"><table><thead><tr><th>SKU / ASIN</th><th>库存</th><th>7天销量</th><th>30天销量</th><th>日销量</th><th>150天目标</th><th>建议补货</th></tr></thead><tbody>
           {snapshot.rows.map(row => <tr key={row.sku}><td><b>{row.sku}</b><span>{row.asin}{row.productName ? ` · ${row.productName}` : ""}</span></td><td>{row.inventory}</td><td>{row.sales7}</td><td>{row.sales30}</td><td>{row.dailySales.toFixed(2)}</td><td>{row.targetInventory}</td><td className={row.recommendedReplenishment > 0 ? "needs-stock" : ""}>{row.recommendedReplenishment}</td></tr>)}
         </tbody></table></div>
