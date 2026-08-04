@@ -3,6 +3,7 @@ import { modelConfigForUser, modelEndpoint, modelHeaders } from "./model-config"
 import { recordTokenUsage, type ProviderUsage } from "./token-usage";
 import { endpointById, executeSpApiEndpoint, exploreSpApiCatalog, loadSpApiConnection, SpApiClient } from "./sp-api";
 import { getReplenishmentSnapshot } from "./store-replenishment";
+import { getFinancialSummary } from "./store-finance";
 
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type AgentMessage = { role: "user" | "assistant" | "tool"; content: string; tool_call_id?: string; name?: string; tool_calls?: ToolCall[] };
@@ -14,8 +15,10 @@ const SYSTEM = `你是 AMZ Pilot 的亚马逊店铺运营 Agent。用户会用�
 2. sp_api_execute 的 parameters 中，路径参数直接按名称提供；查询参数放 query；POST/PUT/PATCH 请求体只放 body。不得使用未定义的 fields 捷径。
 3. 工具报错后阅读错误、修正参数并继续；最多 20 轮，不得第一次失败就放弃。
 4. 用户询问库存、7/30 天销量或补货建议时，优先调用 store_inventory_replenishment。补货公式由服务端确定，不要自行估算。
-5. GET/DELETE 以外的变更操作必须生成审批，审批前不得声称已经执行。
-6. 不得输出或索取已保存密钥。结果过大时先总结并列出最关键条目。`;
+5. 用户询问结算、结算利润、到账或财务金额时，优先调用 store_financial_summary，使用 Finances API 查询交易净额；不要调用 reports_createReport，也不要使用数字 reportType（例如 1117）。若用户明确要求结算报表，reportType 只能使用 Amazon 文档中的字符串，例如 GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2。
+6. store_financial_summary 返回的是 Amazon 结算净额，不等同于扣除采购成本、广告成本后的会计利润；交付时要明确说明口径。
+7. GET/DELETE 以外的变更操作必须生成审批，审批前不得声称已经执行。
+8. 不得输出或索取已保存密钥。结果过大时先总结并列出最关键条目。`;
 
 const TOOLS: Tool[] = [
   {
@@ -32,6 +35,11 @@ const TOOLS: Tool[] = [
     name: "store_inventory_replenishment",
     description: "读取 FBA 当前可售库存和近 30 天订单，按 SKU 返回 7 天销量、30 天销量、日销量、150 天目标库存与建议补货量。",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "store_financial_summary",
+    description: "查询指定日期范围的 Amazon 结算/财务净额。用户询问结算、利润、到账、财务金额时优先使用；不要创建 Reports API 报表。日期使用 YYYY-MM-DD，结束日期不包含在统计范围内。",
+    inputSchema: { type: "object", properties: { startDate: { type: "string", description: "包含，YYYY-MM-DD" }, endDate: { type: "string", description: "不包含，YYYY-MM-DD" }, transactionStatus: { type: "string", enum: ["RELEASED", "DEFERRED_RELEASED"] } }, required: ["startDate", "endDate"], additionalProperties: false },
   },
 ];
 
@@ -86,13 +94,21 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
       try {
         if (call.function.name === "sp_api_explore_catalog") result = exploreSpApiCatalog(args);
         else if (call.function.name === "store_inventory_replenishment") result = await getReplenishmentSnapshot(userId, status);
+        else if (call.function.name === "store_financial_summary") result = await getFinancialSummary(connection, {
+          startDate: String(args.startDate ?? ""),
+          endDate: String(args.endDate ?? ""),
+          transactionStatus: args.transactionStatus,
+        });
         else if (call.function.name === "sp_api_execute") {
           const endpoint = endpointById(String(args.endpoint ?? ""));
-          if (endpoint.method !== "GET") {
+          if (endpoint.id === "reports_createReport" && typeof args.parameters?.body?.reportType !== "string") {
+            result = { isError: true, error: "reports_createReport 的 reportType 必须是 Amazon 定义的字符串，不能使用数字 1117 等内部编号。查询结算/利润请改用 store_financial_summary；如确需结算报表，请使用 GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2。", instruction: "不要创建这个报表请求，请调用 store_financial_summary 并传入目标日期范围。" };
+          } else if (endpoint.method !== "GET") {
             const approval = await createApproval(userId, endpoint.id, args.parameters ?? {});
             return { type: "approval" as const, ...approval, modelRounds: round };
+          } else {
+            result = await executeSpApiEndpoint(client, endpoint.id, args.parameters ?? {});
           }
-          result = await executeSpApiEndpoint(client, endpoint.id, args.parameters ?? {});
         } else throw new Error(`未知工具：${call.function.name}`);
       } catch (error) {
         result = { isError: true, error: error instanceof Error ? error.message : String(error), instruction: "请修正 Endpoint ID 或参数后继续尝试，不要直接放弃。" };
