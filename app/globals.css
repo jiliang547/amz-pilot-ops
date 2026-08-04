@@ -4966,3 +4966,11 @@ h1 span {
 .store-table-card{margin-top:20px;padding:20px 22px}.store-table-head{margin-bottom:16px}.store-table-title{display:flex;align-items:center;gap:9px}.store-table-title strong{font-size:15px}.store-table-badge{display:inline-block!important;margin:0!important;padding:4px 7px;border-radius:6px;background:#eef3ff;color:#246bfe!important;font-size:10px!important;font-weight:700}.store-table-head>div>span:last-child{margin-top:5px}.store-table-head button{border:1px solid #e0e6f0;background:#fff;color:#526078;font-size:12px}.store-table-head button:hover{border-color:#9db9ff;color:#246bfe}.store-table-wrap{max-height:580px;border:1px solid #edf0f5;border-radius:12px}.store-table-wrap table{min-width:860px}.store-table-wrap th{background:#fafbfe;color:#8490a5;font-size:10px;letter-spacing:.04em;text-transform:uppercase}.store-table-wrap td{color:#526078;font-size:12px}.store-table-wrap td:first-child b{color:#263653;font-size:12px}.store-table-wrap td:first-child span{margin-top:4px;color:#98a2b3}.store-table-wrap tr:hover td{background:#fbfcff}.store-table-wrap .needs-stock{color:#dc5b45}
 @media(max-width:1100px){.store-view{padding:24px 20px 50px}.store-hero{grid-template-columns:minmax(0,1fr) 280px}.store-grid{grid-template-columns:minmax(0,1fr) 260px}}
 @media(max-width:800px){.store-view{padding:20px 14px 40px}.store-hero,.store-grid{grid-template-columns:1fr}.store-connection{width:100%}.store-side-card{display:none}.store-chat-thread{max-height:420px}.store-quick-actions{align-items:flex-start}.store-quick-actions>span{width:100%;margin-bottom:1px}}
+
+/* Keep the store page on the same document scroll as Ads; only the table/chat panes scroll internally. */
+.store-view{height:auto;overflow:visible;padding:28px 34px 44px;background:transparent}
+/* Compact connection card: approximately 30% shorter while preserving all status information. */
+.store-connection{height:132px;padding:12px 18px;gap:3px;align-content:space-between}
+.store-connection-head{margin-bottom:0}
+.store-connection-main{margin-bottom:0}
+.store-connection span{margin-bottom:0}
