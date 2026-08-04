@@ -133,8 +133,10 @@ test("compiles all verified Amazon MCP tools into low-token backend skills", asy
   assert.doesNotMatch(compiled, /AMAZON_ADS_PLAYBOOK|tool\.inputSchema/);
   assert.match(compiled, /INSERT INTO approvals/);
   assert.match(compiled, /executeReportTool/);
-  assert.match(agent, /tryCompiledSkill/);
-  assert.match(page, /内置后端 Skill · 低 Token/);
+  assert.doesNotMatch(agent, /tryCompiledSkill|tryRankedCampaignReport|tryFastAggregateReport|trySavedSnapshotQuery/);
+  assert.match(agent, /maximum of 20 reasoning rounds/);
+  assert.match(agent, /The MCP call failed/);
+  assert.match(page, /内置运营模板 · MCP Agent/);
 });
 test("routes campaign ranking questions through backend CSV grouping", async () => {
   const [ranked, agent, reports, compiled] = await Promise.all([
@@ -148,8 +150,7 @@ test("routes campaign ranking questions through backend CSV grouping", async () 
   assert.match(ranked, /reporting-create_campaign_report/);
   assert.match(ranked, /mergeGroups/);
   assert.match(ranked, /modelRounds: 0/);
-  assert.match(agent, /tryRankedCampaignReport/);
-  assert.ok(agent.indexOf("tryRankedCampaignReport") < agent.indexOf("tryFastAggregateReport({"));
+  assert.doesNotMatch(agent, /tryRankedCampaignReport/);
   assert.match(reports, /campaignIdIndex/);
   assert.match(reports, /campaignNameIndex/);
   assert.match(reports, /summary\.groups/);
@@ -185,7 +186,7 @@ test("maintains daily ad facts, refreshes attribution, and computes dashboard wi
   assert.match(snapshots, /RAW_REPORT_RETENTION_DAYS = 30/);
   assert.match(scheduler, /runDailyReportSnapshots/);
   assert.match(snapshots, /runManualReportSnapshots/);
-  assert.ok(agent.indexOf("trySavedSnapshotQuery") < agent.indexOf("tryRankedCampaignReport({"));
+  assert.doesNotMatch(agent, /trySavedSnapshotQuery|tryRankedCampaignReport|tryFastAggregateReport|tryCompiledSkill/);
   assert.match(dashboard, /dashboardData/);
   assert.match(dashboard, /export async function POST/);
   assert.match(dashboardView, /广告数据看板/);

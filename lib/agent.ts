@@ -4,10 +4,6 @@ import { accountContextBlock, discoverAccountMetadata } from "./account-context"
 import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./amazon-mcp";
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
 import { executeReportTool } from "./report-jobs";
-import { tryFastAggregateReport } from "./fast-report";
-import { tryRankedCampaignReport } from "./ranked-report";
-import { tryCompiledSkill } from "./compiled-skills";
-import { trySavedSnapshotQuery } from "./snapshot-reports";
 import type { ActiveSkill } from "./custom-skills";
 function tryLocalConversation(message?: string) {
   if (!message) return undefined;
@@ -106,24 +102,15 @@ export async function planAgent(
     await d1().prepare(`UPDATE accounts SET name=?,advertiser_account_id=?,marketplace=?,timezone=?,currency=?,updated_at=? WHERE id=? AND user_id=?`).bind(row.name, row.advertiser_account_id ?? null, row.marketplace ?? null, row.timezone ?? null, row.currency ?? null, Date.now(), row.id, userId).run();
   } catch { /* Saved account context is still usable. */ }
 
-  if (!skill && plainMessage) {
-    const snapshot = await trySavedSnapshotQuery({ userId, accountId: String(row.id), message: plainMessage, row });
-    if (snapshot) return snapshot;
-    const ranked = await tryRankedCampaignReport({ userId, message: plainMessage, row, credentials, onStatus });
-    if (ranked) return ranked;
-    const fast = await tryFastAggregateReport({ userId, message: plainMessage, row, credentials, onStatus });
-    if (fast) return fast;
-    const compiled = await tryCompiledSkill({ userId, accountId: String(row.id), message: plainMessage, row, credentials, onStatus });
-    if (compiled) return compiled;
-  }
-
   const live = await fixedClient.listTools();
   const tools = live.filter(tool => preferredTools.includes(tool.name));
   const messages: AgentMessage[] = [{ role: "user", content: message }];
   const resultCache = new Map<string, unknown>();
+  const repeatCounts = new Map<string, number>();
   let round = 0;
 
   while (true) {
+    if (round >= 20) throw new Error("MCP Agent exceeded the maximum of 20 reasoning rounds");
     round++;
     onStatus?.(round === 1
       ? `正在按实操规则分析，并提供 ${tools.length} 个实时 MCP 工具`
@@ -152,11 +139,32 @@ export async function planAgent(
 
     messages.push({ role: "assistant", content: decision.content || "", tool_calls: decision.toolCalls });
     for (const item of resolved) {
-      const key = stableKey(item.tool.name, item.args), cached = resultCache.get(key);
+      const key = stableKey(item.tool.name, item.args);
+      const repeatCount = (repeatCounts.get(key) ?? 0) + 1;
+      repeatCounts.set(key, repeatCount);
+      if (repeatCount > 3) {
+        messages.push({ role: "tool", tool_call_id: item.call.id, name: item.tool.name, content: JSON.stringify({
+          error: "This exact MCP call has already been attempted three times in this Agent run.",
+          instruction: "Use the existing result, change arguments according to the live schema, or ask for one genuinely missing business value.",
+        }) });
+        continue;
+      }
+      const cached = resultCache.get(key);
       onStatus?.(cached === undefined ? `正在调用 ${item.tool.name}` : `正在复用本轮已取得的 ${item.tool.name} 结果`);
-      const rawResult = cached === undefined
-        ? await callReadTool(clients[modeForTool(item.tool.name)], item.tool.name, item.args, userId, row.id, onStatus)
-        : cached;
+      let rawResult: unknown;
+      try {
+        rawResult = cached === undefined
+          ? await callReadTool(clients[modeForTool(item.tool.name)], item.tool.name, item.args, userId, row.id, onStatus)
+          : cached;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        messages.push({ role: "tool", tool_call_id: item.call.id, name: item.tool.name, content: JSON.stringify({
+          error: message,
+          instruction: "The MCP call failed. Re-read the live tool schema, correct only unsupported or missing arguments, and continue the same business request. Do not require an object API ID for an account-level report question.",
+        }) });
+        onStatus?.(`MCP ${item.tool.name} 调用失败，Agent 正在根据实时 Schema 自动修正参数`);
+        continue;
+      }
       if (cached === undefined) resultCache.set(key, rawResult);
       await d1().prepare(`INSERT INTO audit_logs(id,user_id,account_id,action,target,detail,outcome,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), userId, row.id, "tool.read", item.tool.name, JSON.stringify(item.args).slice(0, 12000), "success", Date.now()).run();
       const result = item.tool.name.startsWith("reporting-") ? compactReportForModel(rawResult) : rawResult;
