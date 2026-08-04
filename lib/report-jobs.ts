@@ -1,12 +1,13 @@
 import type { AmazonMcpClient } from "./amazon-mcp";
 import { appEnv, d1 } from "./db";
+import { summarizeAdsCsv } from "./ads-workflow";
 
 const MAX_REPORT_BYTES = 25 * 1024 * 1024;
 const POLL_INTERVAL_MS = 15_000;
 const PRIVATE_HOST = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/i;
 
-type WorkflowContext = { userId: string; accountId: string; onStatus?: (text: string) => void; timeoutMs?: number };
-type JobRow = { id: string; report_id: string | null; status: string; request_fingerprint: string };
+type WorkflowContext = { userId: string; accountId: string; onStatus?: (text: string) => void; timeoutMs?: number; queryText?: string };
+type JobRow = { id: string; report_id: string | null; status: string; request_fingerprint: string; error?: string | null };
 
 function walk(value: unknown, visitor: (key: string, value: unknown) => void, key = ""): void {
   visitor(key, value);
@@ -22,11 +23,36 @@ function walk(value: unknown, visitor: (key: string, value: unknown) => void, ke
 export function extractReportIds(value: unknown): string[] {
   const ids = new Set<string>();
   walk(value, (key, item) => {
+    const normalizedKey = key.replace(/[_-]/g, "").toLowerCase();
+    if ((normalizedKey === "reportid" || normalizedKey === "reportids") && (typeof item === "string" || typeof item === "number")) {
+      const candidate = String(item).trim();
+      if (candidate.length >= 8) ids.add(candidate);
+    }
     if (typeof item !== "string") return;
-    if (key.replace(/[_-]/g, "").toLowerCase() === "reportid" && item.trim()) ids.add(item.trim());
-    for (const match of item.matchAll(/["']?report[_-]?id["']?\s*[:=]\s*["']?([A-Za-z0-9._:-]{8,})/gi)) ids.add(match[1]);
+    for (const match of item.matchAll(/(?:\/|\\b)reports?[\\/ ]([A-Za-z0-9._:-]{8,})/gi)) ids.add(match[1]);
+    for (const match of item.matchAll(/["']?report[_-]?ids?["']?\s*[:=]\s*["']?([A-Za-z0-9._:-]{8,})/gi)) ids.add(match[1]);
+    for (const match of item.matchAll(/\breport\s+ids?\s*(?:is|are|=|:)?\s*["']?([A-Za-z0-9._:-]{8,})/gi)) ids.add(match[1]);
   });
   return [...ids];
+}
+
+function mcpCreateError(value: unknown): string | undefined {
+  let message: string | undefined;
+  walk(value, (key, item) => {
+    if (message) return;
+    if (key === "isError" && item === true) message = "Amazon MCP 返回了错误";
+    if (typeof item !== "string") return;
+    const text = item.trim();
+    if (!text) return;
+    try {
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const code = typeof parsed.code === "string" ? parsed.code : undefined;
+      const detail = typeof parsed.message === "string" ? parsed.message : undefined;
+      if (code || detail) message = [code, detail].filter(Boolean).join(": ");
+    } catch { /* ordinary MCP text */ }
+    if (!message && /(?:validation failed|field .* cannot|property .* required|must contain exactly one|invalid request)/i.test(text)) message = text;
+  });
+  return message?.slice(0, 1000);
 }
 
 function reportUrls(value: unknown): string[] {
@@ -73,47 +99,6 @@ function sanitizeSignedUrls(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, sanitizeSignedUrls(item)]));
 }
 
-function parseCsvLine(line: string): string[] {
-  const cells: string[] = []; let value = "", quoted = false;
-  for (let index = 0; index < line.length; index++) {
-    const character = line[index];
-    if (character === '"') { if (quoted && line[index + 1] === '"') { value += '"'; index++; } else quoted = !quoted; }
-    else if (character === "," && !quoted) { cells.push(value); value = ""; } else value += character;
-  }
-  cells.push(value); return cells;
-}
-
-function summarizeCsv(csv: string) {
-  const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return { rowCount: 0, columns: [], aggregates: {}, groups: [] };
-  const headers = parseCsvLine(lines[0]);
-  const normalized = headers.map(header => header.toLowerCase().replace(/[\s_]/g, ""));
-  const metrics: Record<string, string[]> = { totalCost: ["metric.totalcost", "totalcost", "spend", "cost"], sales: ["metric.sales", "sales"], clicks: ["metric.clicks", "clicks"], impressions: ["metric.impressions", "impressions"], purchases: ["metric.purchases", "purchases"], unitsSold: ["metric.unitssold", "unitssold"] };
-  const indexes = Object.fromEntries(Object.entries(metrics).map(([key, names]) => [key, normalized.findIndex(header => names.some(name => header === name || header.endsWith(name)))]));
-  const campaignIdIndex = normalized.findIndex(header => ["campaign.id", "campaignid"].includes(header) || header.endsWith("campaign.id"));
-  const campaignNameIndex = normalized.findIndex(header => ["campaign.name", "campaignname"].includes(header) || header.endsWith("campaign.name"));
-  const aggregates: Record<string, number> = {};
-  const groups = new Map<string, { campaignId?: string; campaignName?: string; aggregates: Record<string, number> }>();
-  for (const key of Object.keys(metrics)) aggregates[key] = 0;
-  for (let index = 1; index < lines.length; index++) {
-    const cells = parseCsvLine(lines[index]);
-    const campaignId = campaignIdIndex >= 0 ? cells[campaignIdIndex]?.trim() : undefined;
-    const campaignName = campaignNameIndex >= 0 ? cells[campaignNameIndex]?.trim() : undefined;
-    const groupKey = campaignId || campaignName;
-    const group = groupKey ? groups.get(groupKey) ?? { campaignId, campaignName, aggregates: {} } : undefined;
-    for (const [key, column] of Object.entries(indexes)) if (column >= 0) {
-      const numeric = Number((cells[column] ?? "").replace(/[$€£¥%\s,]/g, ""));
-      if (Number.isFinite(numeric)) {
-        aggregates[key] += numeric;
-        if (group) group.aggregates[key] = (group.aggregates[key] ?? 0) + numeric;
-      }
-    }
-    if (groupKey && group) groups.set(groupKey, group);
-  }
-  for (const key of Object.keys(aggregates)) if (indexes[key] < 0) delete aggregates[key];
-  return { rowCount: Math.max(0, lines.length - 1), columns: headers, aggregates, groups: [...groups.values()] };
-}
-
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
   if (value && typeof value === "object") return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`).join(",")}}`;
@@ -151,7 +136,7 @@ async function callCreateWithRetry(
   throw new Error("Amazon 报表创建重试次数已用尽");
 }
 
-async function savedResult(job: JobRow): Promise<unknown | null> {
+async function savedResult(job: JobRow, context: WorkflowContext): Promise<unknown | null> {
   if (job.status !== "COMPLETED") return null;
   const files = await d1().prepare(`SELECT part_number partNumber,filename,size,row_count rowCount,summary_json summaryJson,object_key objectKey FROM report_files WHERE report_job_id=? ORDER BY part_number`).bind(job.id).all<Record<string, unknown>>();
   if (!files.results.length) return null;
@@ -159,10 +144,10 @@ async function savedResult(job: JobRow): Promise<unknown | null> {
   const downloadedReports = [];
   for (const file of files.results) {
     let summary = JSON.parse(String(file.summaryJson));
-    if (!Array.isArray(summary.groups) && bucket) {
+    if ((!summary.dimensions || context.queryText) && bucket) {
       const object = await bucket.get(String(file.objectKey));
       if (object) {
-        summary = summarizeCsv(await object.text());
+        summary = summarizeAdsCsv(await object.text(), context.queryText);
         await d1().prepare(`UPDATE report_files SET row_count=?,summary_json=? WHERE report_job_id=? AND part_number=?`).bind(summary.rowCount, JSON.stringify(summary), job.id, file.partNumber).run();
       }
     }
@@ -172,7 +157,7 @@ async function savedResult(job: JobRow): Promise<unknown | null> {
 }
 
 async function upsertJob(context: WorkflowContext, createTool: string, requestFingerprint: string, args: Record<string, unknown>, reportId?: string): Promise<JobRow> {
-  const existing = await d1().prepare(`SELECT id,report_id,status,request_fingerprint FROM report_jobs WHERE user_id=? AND account_id=? AND request_fingerprint=?`).bind(context.userId, context.accountId, requestFingerprint).first<JobRow>();
+  const existing = await d1().prepare(`SELECT id,report_id,status,request_fingerprint,error FROM report_jobs WHERE user_id=? AND account_id=? AND request_fingerprint=?`).bind(context.userId, context.accountId, requestFingerprint).first<JobRow>();
   const now = Date.now();
   if (existing) {
     if (reportId && (existing.status === "FAILED" || existing.status === "CANCELLED" || !existing.report_id)) {
@@ -199,7 +184,7 @@ async function downloadAndPersist(job: JobRow, value: unknown, context: Workflow
     const bytes = await response.arrayBuffer();
     if (bytes.byteLength > MAX_REPORT_BYTES) throw new Error("Amazon 单个报表超过 25MB，暂时无法保存和分析");
     const csv = new TextDecoder().decode(bytes);
-    const summary = summarizeCsv(csv);
+    const summary = summarizeAdsCsv(csv, context.queryText);
     const part = index + 1;
     const objectKey = `reports/${context.userId}/${context.accountId}/${job.id}/part-${part}.csv`;
     const filename = `amazon-ads-${job.report_id ?? job.id}-part-${part}.csv`;
@@ -240,7 +225,7 @@ async function pollReport(client: AmazonMcpClient, job: JobRow, context: Workflo
     const state = reportState(result);
     await d1().prepare(`UPDATE report_jobs SET status=?,updated_at=? WHERE id=?`).bind(state === "UNKNOWN" ? "PENDING" : state, Date.now(), job.id).run();
     if (state === "FAILED" || state === "CANCELLED") {
-      const detail = reportFailure(result);
+      const detail = reportFailure(result) ?? JSON.stringify(sanitizeSignedUrls(result)).slice(0, 1200);
       const error = `Amazon 报表状态为 ${state}${detail ? `：${detail}` : ""}`;
       await d1().prepare(`UPDATE report_jobs SET error=?,updated_at=? WHERE id=?`).bind(error, Date.now(), job.id).run();
       throw new Error(error);
@@ -269,14 +254,22 @@ export async function executeReportTool(client: AmazonMcpClient, name: string, a
     if (!ids.length) return client.callTool(name, args);
     const requestFingerprint = await fingerprint(name, { reportId: ids[0] });
     const job = await upsertJob(context, name, requestFingerprint, args, ids[0]);
-    const saved = await savedResult(job); if (saved) return saved;
+    const saved = await savedResult(job, context); if (saved) return saved;
     return pollReport(client, job, context);
   }
   const requestFingerprint = await fingerprint(name, args);
   let job = await upsertJob(context, name, requestFingerprint, args);
-  const saved = await savedResult(job); if (saved) { context.onStatus?.("发现相同条件的已完成报表，直接复用私有保存结果"); return saved; }
+  const saved = await savedResult(job, context); if (saved) { context.onStatus?.("发现相同条件的已完成报表，直接复用私有保存结果"); return saved; }
   if (job.report_id && !["FAILED", "CANCELLED"].includes(job.status)) { context.onStatus?.("发现相同条件的已有报表，继续轮询原 Report ID"); return pollReport(client, job, context); }
-  if (!job.report_id && job.status === "CREATE_UNCERTAIN") throw new Error("此前相同条件的报表创建结果不确定，系统已阻止自动重建；请在报表记录中查看错误详情。");
+  if (!job.report_id && job.status === "CREATE_UNCERTAIN") {
+    const recoveredReportId = job.error ? extractReportIds(job.error)[0] : undefined;
+    if (recoveredReportId) {
+      job = await upsertJob(context, name, requestFingerprint, args, recoveredReportId);
+      context.onStatus?.(`已从此前保存的创建响应恢复 Report ID ${recoveredReportId}，继续轮询`);
+      return pollReport(client, job, context);
+    }
+    throw new Error("此前相同条件的报表创建结果不确定，系统已阻止自动重建；请在报表记录中查看错误详情。");
+  }
   let created: unknown;
   try {
     created = await callCreateWithRetry(client, name, args, context);
@@ -284,6 +277,11 @@ export async function executeReportTool(client: AmazonMcpClient, name: string, a
     const message = error instanceof Error ? error.message : String(error);
     await d1().prepare(`UPDATE report_jobs SET status='CREATE_FAILED',error=?,updated_at=? WHERE id=?`).bind(message.slice(0, 1000), Date.now(), job.id).run();
     throw error;
+  }
+  const toolError = mcpCreateError(created);
+  if (toolError) {
+    await d1().prepare(`UPDATE report_jobs SET status='CREATE_FAILED',error=?,updated_at=? WHERE id=?`).bind(toolError, Date.now(), job.id).run();
+    throw new Error(`Amazon 报表创建请求被拒绝：${toolError}`);
   }
   const reportId = extractReportIds(created)[0];
   if (!reportId) {

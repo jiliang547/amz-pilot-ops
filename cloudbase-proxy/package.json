@@ -1,0 +1,10 @@
+{
+  "name": "amz-pilot-cloudbase-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "playwright": "1.54.2" },
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

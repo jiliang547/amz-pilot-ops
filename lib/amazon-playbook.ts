@@ -14,9 +14,15 @@ export const AMAZON_ADS_PLAYBOOK = `
 - 复杂创建按 Campaign → Ad Group → Product Ad → Target/Keyword 顺序执行；每步保存返回 ID，失败后不得重建已成功父对象。
 - 写操作必须先查询确认目标、当前值和影响，再只生成一次准确的写工具调用，等待人工审批；执行后必须回查。
 - partialSuccess 时不得整批重试，避免重复创建或重复修改。
+- 同一轮不要同时调用只读与写工具：先完成所有查询和报表分析，再依据真实结果生成写入计划。
+- 一句话包含“查询后修改”时必须完整执行：先找出满足条件的对象，再查询其当前设置，最后给出包含对象名称、API ID、旧值、新值和影响的审批计划，不能只完成第一步。
+- 多个互不依赖的写入可以在同一审批计划中提交；执行层会拆成单对象串行写入并逐条回查。依赖新建父对象 ID 的子步骤必须等待父步骤成功后再继续，不得猜测 ID。
+- Campaign 竞价策略映射：固定竞价=MANUAL，仅降低=SALES_DOWN_ONLY，提高和降低=SALES_UP_AND_DOWN。只改竞价策略时先查询并保留其他必须的 optimization 与 placement 设置。
+- 自定义 Skill 是完整工作流，不是单轮提示。必须按 Skill 顺序持续调用多个工具，直到只读结论完成或形成明确的 DRY_RUN 写入计划；不得因为完成一个阶段就提前停止。
 - 更新 Target/Keyword Bid 使用 campaign_management-update_target_bid，格式必须为 {"bid":{"bid":数值}}。
 - 归档 Target 使用 campaign_management-delete_target；结果是 ARCHIVED 且不可恢复。update_target 不能传 ARCHIVED。
 - Sponsored Products Ad Group 不传 marketplaceScope 或 marketplaces；Product Ad 使用真实 SKU/ASIN；暂停对象前先查真实 adId/targetId。
+- 创建 Product Ad 或执行自定义扩词 Skill 前，如实时 tools/list 提供 Product Eligibility 工具，必须先用该只读工具检查候选 ASIN；不合格或结果冲突时停止创建，不得跳过预检。
 
 【实测能力范围】
 - 已验证并应完整提供给模型的能力：账户查询；Campaign、Ad Group、Product Ad、Target/Keyword 的查询；Campaign、Ad Group、Product Ad、正向/否定 Target 的创建；Campaign、Ad Group、Product Ad、Target 状态和 Bid 的更新；Target 归档；Campaign、Search Terms、Product Ad 报表；已知 Portfolio ID 反查 Campaign 和关联 Portfolio。

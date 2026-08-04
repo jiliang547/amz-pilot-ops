@@ -1,8 +1,9 @@
-import { accountCredentials } from "./accounts";
+﻿import { accountCredentials } from "./accounts";
 import { AmazonAdsApiClient, executeDirectReport, type AmazonAdsReportKind } from "./amazon-ads-api";
 import type { AmazonCredentials } from "./amazon-mcp";
 import { appEnv, d1 } from "./db";
 import { runAnomalyAnalysis } from "./anomaly-analysis";
+import { effectiveTimezone } from "./timezone";
 
 type WindowKey = "1d" | "7d" | "30d" | "90d";
 type Metrics = Record<string, number>;
@@ -85,7 +86,7 @@ async function cleanupOldRawReports(userId: string, accountId: string) {
 
 type KindSyncResult = { reportKind: AmazonAdsReportKind; syncDate: string; mode: "initial" | "rolling"; startDate: string; endDate: string; status: string; reportId?: string; rowsUpserted?: number; error?: string };
 async function runReportKindSync(row: Record<string, unknown>, credentials: AmazonCredentials, client: AmazonAdsApiClient, kind: AmazonAdsReportKind, force: boolean, onStatus?: (text: string) => void, timeoutMs = REPORT_REFRESH_TIMEOUT_MS, forceInitial = false, triggerType: "manual" | "automatic" = "automatic"): Promise<KindSyncResult> {
-  const userId = String(row.user_id), accountId = String(row.id), syncDate = localParts(String(row.timezone ?? "UTC")).date, endDate = shiftDate(syncDate, -1), initialStart = shiftDate(endDate, -89), table = FACT_TABLES[kind];
+  const userId = String(row.user_id), accountId = String(row.id), syncDate = localParts(effectiveTimezone(row)).date, endDate = shiftDate(syncDate, -1), initialStart = shiftDate(endDate, -89), table = FACT_TABLES[kind];
   const coverage = await d1().prepare(`SELECT MIN(report_date) minDate,COUNT(*) rowCount FROM ${table} WHERE user_id=? AND account_id=?`).bind(userId, accountId).first<{ minDate?: string; rowCount: number }>();
   const completedInitial = await d1().prepare(`SELECT id FROM ad_report_syncs WHERE user_id=? AND account_id=? AND report_kind=? AND mode='initial' AND status='COMPLETED' LIMIT 1`).bind(userId, accountId, kind).first<{ id: string }>();
   const initial = forceInitial || (!completedInitial && (!coverage?.rowCount || !coverage.minDate || coverage.minDate > initialStart)), mode: "initial" | "rolling" = initial ? "initial" : "rolling", startDate = initial ? initialStart : shiftDate(endDate, -(ROLLING_ATTRIBUTION_DAYS - 1)), now = Date.now();
@@ -117,7 +118,7 @@ async function runReportKindSync(row: Record<string, unknown>, credentials: Amaz
 export async function runDailyReportSnapshots(): Promise<number> {
   const accounts = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts ORDER BY updated_at`).all<Record<string, unknown>>();
   for (const row of accounts.results) {
-    const local = localParts(String(row.timezone ?? "UTC")); if (local.hour === 0 && local.minute < 15) continue;
+    const local = localParts(effectiveTimezone(row)); if (local.hour === 0 && local.minute < 15) continue;
     const analyzeIfReady = async () => {
       const ready = await d1().prepare(`SELECT COUNT(DISTINCT report_kind) count FROM ad_report_syncs WHERE account_id=? AND sync_date=? AND status='COMPLETED'`).bind(row.id, local.date).first<{ count: number }>();
       if (Number(ready?.count ?? 0) !== REPORT_KINDS.length) return false;
@@ -141,10 +142,10 @@ export async function runManualReportSnapshots(userId: string, accountId: string
   const row = await d1().prepare(`SELECT id,user_id,name,region,marketplace,timezone,currency,profile_id,advertiser_account_id FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>(); if (!row) throw new Error("店铺不存在");
   const { credentials } = await accountCredentials(userId, accountId), client = new AmazonAdsApiClient(credentials), deadline = Date.now() + REPORT_REFRESH_TIMEOUT_MS, reports: KindSyncResult[] = [];
   onStatus?.("开始同步 Campaign、投放关键词、客户搜索词三类每日数据；首次回填会自动分段，整体最长等待 3 小时");
-  for (const kind of REPORT_KINDS) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { reports.push({ reportKind: kind, syncDate: localParts(String(row.timezone ?? "UTC")).date, mode: "rolling", startDate: "", endDate: "", status: "FAILED", error: "三类数据整体等待已达到3小时" }); continue; } reports.push(await runReportKindSync(row, credentials, client, kind, true, onStatus, remainingMs, Boolean(options.forceInitial), "manual")); }
+  for (const kind of REPORT_KINDS) { const remainingMs = deadline - Date.now(); if (remainingMs <= 0) { reports.push({ reportKind: kind, syncDate: localParts(effectiveTimezone(row)).date, mode: "rolling", startDate: "", endDate: "", status: "FAILED", error: "三类数据整体等待已达到3小时" }); continue; } reports.push(await runReportKindSync(row, credentials, client, kind, true, onStatus, remainingMs, Boolean(options.forceInitial), "manual")); }
   const completed = reports.every(item => item.status === "COMPLETED"), analysis = completed ? await runAnomalyAnalysis(userId, accountId, { force: true, onStatus }) : null;
   if (completed) { await d1().prepare(`DELETE FROM report_snapshots WHERE account_id=?`).bind(accountId).run(); await cleanupOldRawReports(userId, accountId); }
-  return { syncDate: localParts(String(row.timezone ?? "UTC")).date, status: completed ? "COMPLETED" : "FAILED", reports, analysis, windows: reports.map(item => ({ windowKey: item.reportKind, status: item.status, error: item.error })) };
+  return { syncDate: localParts(effectiveTimezone(row)).date, status: completed ? "COMPLETED" : "FAILED", reports, analysis, windows: reports.map(item => ({ windowKey: item.reportKind, status: item.status, error: item.error })) };
 }
 
 async function aggregateCampaignWindow(userId: string, accountId: string, startDate: string, endDate: string): Promise<SnapshotPayload> {
@@ -183,10 +184,14 @@ function insightRows(payload: SnapshotPayload) {
     return { label: group.label || "未命名", secondary: group.secondary, campaignName: group.campaignName, metrics };
   });
   return { topBySales: [...mapped].sort((a, b) => b.metrics.sales - a.metrics.sales).slice(0, 8), highSpendNoOrder: mapped.filter(item => item.metrics.totalCost > 0 && item.metrics.purchases === 0).sort((a, b) => b.metrics.totalCost - a.metrics.totalCost).slice(0, 8) };
-}export async function dashboardData(userId: string, accountId: string) {
-  const account = await d1().prepare(`SELECT timezone FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<{ timezone?: string }>(), endDate = shiftDate(localParts(String(account?.timezone ?? "UTC")).date, -1);
+}async function dailyCampaignMetrics(userId: string, accountId: string, startDate: string, endDate: string) {
+  const rows = await d1().prepare(`SELECT report_date date,SUM(impressions) impressions,SUM(clicks) clicks,SUM(cost) cost,SUM(purchases) orders,SUM(sales) sales FROM ad_daily_facts WHERE user_id=? AND account_id=? AND report_date BETWEEN ? AND ? GROUP BY report_date ORDER BY report_date`).bind(userId, accountId, startDate, endDate).all<Record<string, unknown>>();
+  return rows.results.map(row => { const cost = Number(row.cost ?? 0), sales = Number(row.sales ?? 0), impressions = Number(row.impressions ?? 0), clicks = Number(row.clicks ?? 0), orders = Number(row.orders ?? 0); return { date: String(row.date), spend: cost, acos: sales ? cost / sales * 100 : 0, orders, sales, clicks, conversionRate: clicks ? orders / clicks * 100 : 0, impressions }; });
+}
+export async function dashboardData(userId: string, accountId: string) {
+  const account = await d1().prepare(`SELECT timezone,marketplace,region FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<{ timezone?: string }>(), endDate = shiftDate(localParts(effectiveTimezone(account ?? {})).date, -1);
   const syncRows = await d1().prepare(`SELECT sync_date syncDate,report_kind reportKind,status,error,mode,trigger_type triggerType,start_date startDate,end_date endDate,rows_upserted rowsUpserted,updated_at updatedAt,completed_at completedAt FROM ad_report_syncs WHERE user_id=? AND account_id=? AND sync_date=(SELECT MAX(sync_date) FROM ad_report_syncs WHERE user_id=? AND account_id=?)`).bind(userId, accountId, userId, accountId).all<Record<string, unknown>>(), syncByKind = new Map(syncRows.results.map(row => [String(row.reportKind), row]));
-  const windows = [];
+  const chartStart = shiftDate(endDate, -14), dailyMetrics = await dailyCampaignMetrics(userId, accountId, chartStart, endDate), windows = [];
   for (const window of WINDOWS) { const startDate = shiftDate(endDate, -(window.days - 1)), payload = await aggregateCampaignWindow(userId, accountId, startDate, endDate), a = payload.aggregates, metrics: Metrics = { ...a, roas: a.totalCost ? (a.sales ?? 0) / a.totalCost : 0, acos: a.sales ? (a.totalCost ?? 0) / a.sales * 100 : 0, ctr: a.impressions ? (a.clicks ?? 0) / a.impressions * 100 : 0 }, sync = syncByKind.get("campaign"), current = sync?.status === "COMPLETED" && sync.endDate === endDate, status = current ? "COMPLETED" : sync?.status === "COMPLETED" ? "STALE" : String(sync?.status ?? "EMPTY"), error = status === "STALE" ? "Campaign每日事实尚未刷新到昨天" : sync?.error; windows.push({ windowKey: window.key, startDate, endDate, status, error, completedAt: sync?.completedAt, rowCount: payload.rowCount, metrics, provisionalRows: payload.provisionalRows, topCampaigns: [...payload.groups].sort((x, y) => (y.aggregates.totalCost ?? 0) - (x.aggregates.totalCost ?? 0)).slice(0, 5) }); }
   const insightStart = shiftDate(endDate, -29), keywordPayload = await aggregateEntityWindow("keyword", userId, accountId, insightStart, endDate), searchPayload = await aggregateEntityWindow("searchTerm", userId, accountId, insightStart, endDate), keywordSync = syncByKind.get("keyword"), searchSync = syncByKind.get("searchTerm");
   const keywordInsights = { startDate: insightStart, endDate, status: keywordSync?.status === "COMPLETED" && keywordSync.endDate === endDate ? "COMPLETED" : String(keywordSync?.status ?? "EMPTY"), ...insightRows(keywordPayload) }, searchTermInsights = { startDate: insightStart, endDate, status: searchSync?.status === "COMPLETED" && searchSync.endDate === endDate ? "COMPLETED" : String(searchSync?.status ?? "EMPTY"), ...insightRows(searchPayload) };
@@ -195,5 +200,5 @@ function insightRows(payload: SnapshotPayload) {
   const wastedSearchSpend = searchTermInsights.highSpendNoOrder.reduce((sum, item) => sum + Number(item.metrics.totalCost ?? 0), 0); if (wastedSearchSpend > 0) anomalies.push({ severity: "medium", title: "存在高花费零订单搜索词", detail: `近30天榜单中的零订单搜索词合计花费 ${format(wastedSearchSpend)}。` });
   const latestRow = [...syncRows.results].filter(row => Number(row.completedAt ?? 0) > 0).sort((a, b) => Number(b.completedAt ?? 0) - Number(a.completedAt ?? 0))[0];
   const latestRefresh = latestRow ? { completedAt: Number(latestRow.completedAt), type: String(latestRow.triggerType ?? "automatic") === "manual" ? "manual" : "automatic", syncDate: String(latestRow.syncDate ?? "") } : null;
-  return { windows, anomalies, keywordInsights, searchTermInsights, reportSyncs: syncRows.results, latestRefresh, generatedAt: Date.now() };
+  return { windows, dailyMetrics, anomalies, keywordInsights, searchTermInsights, reportSyncs: syncRows.results, latestRefresh, generatedAt: Date.now() };
 }

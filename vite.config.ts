@@ -1,40 +1,37 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
+import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
+
+const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
+  "00000000-0000-4000-8000-000000000000";
+
+const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
-  name: "amz-pilot-ops",
   main: "./worker/index.ts",
-  compatibility_date: "2026-07-28",
   compatibility_flags: ["nodejs_compat"],
-  vars: {
-    AMAZON_MCP_URL: "https://advertising-ai.amazon.com/mcp",
-    MODEL_BASE_URL: "https://hjlyy.cc/v1",
-    MODEL_NAME: "gpt-5.6-luna",
-    MODEL_USER_AGENT: "Mozilla/5.0",
-  },
-  d1_databases: [
-    {
-      binding: "DB",
-      database_name: "amz-pilot-ops-db",
-      database_id: "e3ea5f58-883d-4d7d-a74a-a870f1dbb22d",
-    },
-  ],
+  d1_databases: d1
+    ? [
+        {
+          binding: d1,
+          database_name: "site-creator-d1",
+          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+        },
+      ]
+    : [],
   triggers: { crons: ["*/5 * * * *"] },
-  r2_buckets: [
-    {
-      binding: "FILES",
-      bucket_name: "amz-pilot-ops-files",
-    },
-  ],
-  images: { binding: "IMAGES" },
-  observability: {
-    enabled: true,
-    head_sampling_rate: 1,
-  },
+  r2_buckets: r2
+    ? [
+        {
+          binding: r2,
+          bucket_name: "site-creator-r2",
+        },
+      ]
+    : [],
 };
 
 export default defineConfig(async () => {

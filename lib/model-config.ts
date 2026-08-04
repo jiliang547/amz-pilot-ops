@@ -6,7 +6,9 @@ export type ModelConfig = {
   apiKey: string;
   modelName: string;
   userAgent: string;
-  source: "personal" | "system";
+  source: "personal" | "preset" | "system";
+  presetId?: string;
+  displayName?: string;
 };
 
 type StoredSecret = { apiKey: string };
@@ -19,14 +21,52 @@ function normalizeBaseUrl(value: string): string {
 
 export async function modelConfigForUser(userId: string): Promise<ModelConfig> {
   await ensureSchema();
-  const row = await d1().prepare(
-    `SELECT base_url,model_name,user_agent,encrypted_api_key FROM model_settings WHERE user_id=?`,
-  ).bind(userId).first<{
-    base_url: string;
-    model_name: string;
-    user_agent: string | null;
-    encrypted_api_key: string;
-  }>();
+  const selection = await d1()
+    .prepare(
+      `SELECT source,preset_model_id FROM user_model_selections WHERE user_id=?`,
+    )
+    .bind(userId)
+    .first<{ source: string; preset_model_id: string | null }>();
+
+  if (selection?.source === "preset" && selection.preset_model_id) {
+    const preset = await d1()
+      .prepare(
+        `SELECT id,display_name,base_url,model_name,user_agent,encrypted_api_key FROM site_models WHERE id=? AND enabled=1`,
+      )
+      .bind(selection.preset_model_id)
+      .first<{
+        id: string;
+        display_name: string;
+        base_url: string;
+        model_name: string;
+        user_agent: string | null;
+        encrypted_api_key: string;
+      }>();
+    if (preset) {
+      const secret = await decryptJson<StoredSecret>(preset.encrypted_api_key);
+      return {
+        baseUrl: normalizeBaseUrl(preset.base_url),
+        apiKey: secret.apiKey,
+        modelName: preset.model_name,
+        userAgent: preset.user_agent || "AMZ-Pilot/1.0",
+        source: "preset",
+        presetId: preset.id,
+        displayName: preset.display_name,
+      };
+    }
+  }
+
+  const row = await d1()
+    .prepare(
+      `SELECT base_url,model_name,user_agent,encrypted_api_key FROM model_settings WHERE user_id=?`,
+    )
+    .bind(userId)
+    .first<{
+      base_url: string;
+      model_name: string;
+      user_agent: string | null;
+      encrypted_api_key: string;
+    }>();
 
   if (row) {
     const secret = await decryptJson<StoredSecret>(row.encrypted_api_key);
@@ -39,8 +79,34 @@ export async function modelConfigForUser(userId: string): Promise<ModelConfig> {
     };
   }
 
+  const preset = await d1()
+    .prepare(
+      `SELECT id,display_name,base_url,model_name,user_agent,encrypted_api_key FROM site_models WHERE enabled=1 ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .first<{
+      id: string;
+      display_name: string;
+      base_url: string;
+      model_name: string;
+      user_agent: string | null;
+      encrypted_api_key: string;
+    }>();
+  if (preset) {
+    const secret = await decryptJson<StoredSecret>(preset.encrypted_api_key);
+    return {
+      baseUrl: normalizeBaseUrl(preset.base_url),
+      apiKey: secret.apiKey,
+      modelName: preset.model_name,
+      userAgent: preset.user_agent || "AMZ-Pilot/1.0",
+      source: "preset",
+      presetId: preset.id,
+      displayName: preset.display_name,
+    };
+  }
+
   const runtime = appEnv();
-  if (!runtime.MODEL_BASE_URL || !runtime.MODEL_API_KEY) throw new Error("请先在“模型配置”中填写模型接口和 API Key");
+  if (!runtime.MODEL_BASE_URL || !runtime.MODEL_API_KEY)
+    throw new Error("请先在“模型配置”中填写模型接口和 API Key");
   return {
     baseUrl: normalizeBaseUrl(runtime.MODEL_BASE_URL),
     apiKey: runtime.MODEL_API_KEY,
@@ -62,7 +128,9 @@ export function modelHeaders(config: ModelConfig): Record<string, string> {
   };
 }
 
-export async function testModelConfig(config: Omit<ModelConfig, "source">): Promise<void> {
+export async function testModelConfig(
+  config: Omit<ModelConfig, "source">,
+): Promise<void> {
   const tested = { ...config, source: "personal" as const };
   const response = await fetch(modelEndpoint(tested), {
     method: "POST",
@@ -77,6 +145,8 @@ export async function testModelConfig(config: Omit<ModelConfig, "source">): Prom
   });
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 220);
-    throw new Error(`模型连接测试失败 (${response.status})${detail ? `：${detail}` : ""}`);
+    throw new Error(
+      `模型连接测试失败 (${response.status})${detail ? `：${detail}` : ""}`,
+    );
   }
 }

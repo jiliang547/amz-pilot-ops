@@ -1,0 +1,6 @@
+{
+  "name":"amz-pilot-rank-playwright",
+  "private":true,
+  "type":"module",
+  "dependencies":{"playwright":"1.55.0"}
+}

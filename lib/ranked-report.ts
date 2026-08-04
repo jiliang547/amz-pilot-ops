@@ -12,8 +12,9 @@ const CAMPAIGN = /campaign|广告活动|活动/i;
 const METRIC = /花费|消耗|支出|spend|cost|销售额|sales|点击|click|曝光|impression|订单|购买|purchase|acos|roas|ctr/i;
 const DATE = /今天|今日|昨天|昨日|本月|这个月|最近|近\s*\d|过去\s*\d|today|yesterday|last\s*\d/i;
 
+const MUTATION = /鍒涘缓|鏂板缓|娣诲姞|淇敼|鏇存柊|璋冩暣|鏆傚仠|鍚敤|鍒犻櫎|褰掓。|涓嬭皟|涓婅皟|鎻愰珮|闄嶄綆|鎵€鏈夌鍚?|批量|create|update|pause|enable|delete|archive|lower|raise|adjust/i;
 export function isRankedCampaignReport(message: string): boolean {
-  return RANKING.test(message) && CAMPAIGN.test(message) && METRIC.test(message) && DATE.test(message);
+  return RANKING.test(message) && CAMPAIGN.test(message) && METRIC.test(message) && DATE.test(message) && !MUTATION.test(message);
 }
 
 function localDate(timezone: string, offsetDays: number): string {
@@ -31,7 +32,7 @@ function rangeFor(message: string, timezone: string): Range | null {
   if (/今天|今日|today/i.test(message)) { const date = localDate(timezone, 0); return { startDate: date, endDate: date, label: `${date}（今天）`, includesToday: true }; }
   if (/昨天|昨日|yesterday/i.test(message)) { const date = localDate(timezone, -1); return { startDate: date, endDate: date, label: `${date}（昨天）`, includesToday: false }; }
   if (/本月|这个月/i.test(message)) { const endDate = localDate(timezone, 0); return { startDate: `${endDate.slice(0, 8)}01`, endDate, label: `${endDate.slice(0, 7)} 本月至今`, includesToday: true }; }
-  const match = message.match(/(?:最近|近|过去)\s*(\d{1,3})\s*(?:天|日)|last\s*(\d{1,3})\s*days?/i);
+  const match = message.match(/最近\s*(\d{1,3})\s*天/i) ?? message.match(/近\s*(\d{1,3})\s*天/i) ?? message.match(/过去\s*(\d{1,3})\s*天/i) ?? message.match(/last\s*(\d{1,3})\s*days?/i);
   if (!match) return null;
   const days = Math.max(1, Math.min(90, Number(match[1] ?? match[2])));
   const includesToday = /包含今天|含今天|including\s*today/i.test(message);

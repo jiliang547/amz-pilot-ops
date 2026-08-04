@@ -1,0 +1,10 @@
+﻿{
+    "worker":  "amz-pilot-ops",
+    "source":  "Cloudflare deployed bundle",
+    "version":  "0127a3d3-846c-4bd1-8f69-e34572e0ee36",
+    "deployed_at":  "2026-08-04T04:24:24.37407Z",
+    "compatibility_date":  "2026-07-28",
+    "compatibility_flags":  [
+                                "nodejs_compat"
+                            ]
+}

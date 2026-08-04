@@ -1,0 +1,4 @@
+interface:
+  display_name: "亚马逊五点及产品描述生成工作流"
+  short_description: "通过八节点分析生成亚马逊五点描述及SEO产品描述"
+  default_prompt: "Use $generate-amazon-five-bullets to generate Amazon five bullets and an SEO-aware product description from my input files."

@@ -1,0 +1,6 @@
+{
+  "envId": "int-english-d5g7li50064ce3007",
+  "cloudrun": {
+    "name": "amz-pilot"
+  }
+}

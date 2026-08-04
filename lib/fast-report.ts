@@ -42,7 +42,7 @@ function reportRange(message: string, timezone: string): DateRange | null {
     const endDate = dateInZone(timezone, 0);
     return { startDate: `${endDate.slice(0, 8)}01`, endDate, label: `${endDate.slice(0, 7)} 本月至今`, includesToday: true };
   }
-  const daysMatch = message.match(/(?:最近|近|过去)\s*(\d{1,3})\s*(?:天|日)|last\s*(\d{1,3})\s*days?/i);
+  const daysMatch = message.match(/最近\s*(\d{1,3})\s*天/i) ?? message.match(/近\s*(\d{1,3})\s*天/i) ?? message.match(/过去\s*(\d{1,3})\s*天/i) ?? message.match(/last\s*(\d{1,3})\s*days?/i);
   if (daysMatch) {
     const days = Math.max(1, Math.min(90, Number(daysMatch[1] ?? daysMatch[2])));
     const includesToday = /包含今天|含今天|including\s*today/i.test(message);

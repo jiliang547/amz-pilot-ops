@@ -2,6 +2,7 @@ import type { McpTool } from "./amazon-mcp";
 import { skillSystemBlock, type ActiveSkill } from "./custom-skills";
 import { AMAZON_ADS_PLAYBOOK } from "./amazon-playbook";
 import { modelConfigForUser, modelEndpoint, modelHeaders } from "./model-config";
+import { recordTokenUsage, type ProviderUsage } from "./token-usage";
 
 export type ModelContent = string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 export type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
@@ -28,15 +29,19 @@ function toolDefs(tools: McpTool[]) {
   }));
 }
 
-type ModelReply = { content: string; toolCalls: ToolCall[] };
+type ModelReply = { content: string; toolCalls: ToolCall[]; usage?: ProviderUsage };
 type JsonChoice = { message?: { content?: string | null; tool_calls?: ToolCall[] } };
+type StreamEvent = {
+  choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; type?: "function"; function?: { name?: string; arguments?: string } }> } }>;
+  usage?: ProviderUsage;
+};
 
 async function parseStreamingReply(response: Response): Promise<ModelReply> {
   if (!response.body) throw new Error("模型未返回流");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const calls = new Map<number, ToolCall>();
-  let buffer = "", content = "";
+  let buffer = "", content = "", usage: ProviderUsage | undefined;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -47,8 +52,9 @@ async function parseStreamingReply(response: Response): Promise<ModelReply> {
       if (!line.startsWith("data:")) continue;
       const raw = line.slice(5).trim();
       if (!raw || raw === "[DONE]") continue;
-      let event: { choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; type?: "function"; function?: { name?: string; arguments?: string } }> } }> };
+      let event: StreamEvent;
       try { event = JSON.parse(raw); } catch { continue; }
+      if (event.usage) usage = event.usage;
       const delta = event.choices?.[0]?.delta;
       if (typeof delta?.content === "string") content += delta.content;
       for (const fragment of delta?.tool_calls ?? []) {
@@ -61,7 +67,7 @@ async function parseStreamingReply(response: Response): Promise<ModelReply> {
       }
     }
   }
-  return { content, toolCalls: [...calls.values()].filter(call => call.function.name) };
+  return { content, toolCalls: [...calls.values()].filter(call => call.function.name), usage };
 }
 
 export async function decide(userId: string, messages: AgentMessage[], tools: McpTool[], skill?: ActiveSkill, accountContext = ""): Promise<ModelReply> {
@@ -92,9 +98,15 @@ export async function decide(userId: string, messages: AgentMessage[], tools: Mc
   });
   if (!response.ok) throw new Error(`模型接口失败 (${response.status}): ${(await response.text()).slice(0, 180)}`);
   const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("text/event-stream")) return parseStreamingReply(response);
-  const data = await response.json() as { choices?: JsonChoice[] };
+  if (contentType.includes("text/event-stream")) {
+    const reply = await parseStreamingReply(response);
+    await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: "agent.decide", usage: reply.usage, request: requestBody, response: { content: reply.content, toolCalls: reply.toolCalls } });
+    return reply;
+  }
+  const data = await response.json() as { choices?: JsonChoice[]; usage?: ProviderUsage };
   const message = data.choices?.[0]?.message;
   if (!message) throw new Error("模型未返回结果");
-  return { content: message.content ?? "", toolCalls: message.tool_calls ?? [] };
+  const reply = { content: message.content ?? "", toolCalls: message.tool_calls ?? [], usage: data.usage };
+  await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: "agent.decide", usage: data.usage, request: requestBody, response: reply });
+  return reply;
 }

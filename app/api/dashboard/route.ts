@@ -1,9 +1,12 @@
 import { assertSameOrigin, requireUser } from "@/lib/auth";
 import { dashboardData, runManualReportSnapshots } from "@/lib/snapshot-reports";
+import { effectiveTimezone } from "@/lib/timezone";
 import { d1, ensureSchema } from "@/lib/db";
 
 async function ownedAccount(userId: string, accountId: string) {
-  return d1().prepare(`SELECT id,name,timezone,currency FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>();
+  const account = await d1().prepare(`SELECT id,name,timezone,marketplace,region,currency FROM accounts WHERE id=? AND user_id=?`).bind(accountId, userId).first<Record<string, unknown>>();
+  if (account) account.timezone = effectiveTimezone(account);
+  return account;
 }
 
 export async function GET(request: Request) {

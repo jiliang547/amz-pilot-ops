@@ -5,6 +5,15 @@ import { AmazonMcpClient, isWriteTool, modeForTool, preferredTools } from "./ama
 import { decide, type AgentMessage, type ModelContent, type ToolCall } from "./model";
 import { executeReportTool } from "./report-jobs";
 import type { ActiveSkill } from "./custom-skills";
+
+// Custom Skills may explicitly request the MCP protocol's tools/list method.
+// Expose it as a local read-only adapter so the model can inspect the already
+// validated allowlisted schema without attempting an unauthorized remote call.
+const schemaTool = {
+  name: "tools/list",
+  description: "Return the current allowlisted Amazon Ads MCP tools and schemas.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+} satisfies import("./amazon-mcp").McpTool;
 function tryLocalConversation(message?: string) {
   if (!message) return undefined;
   const normalized = message.trim().replace(/[!！?？。.，,\s]+$/g, "").toLowerCase();
@@ -103,7 +112,7 @@ export async function planAgent(
   } catch { /* Saved account context is still usable. */ }
 
   const live = await fixedClient.listTools();
-  const tools = live.filter(tool => preferredTools.includes(tool.name));
+  const tools = [schemaTool, ...live.filter(tool => preferredTools.includes(tool.name))];
   const messages: AgentMessage[] = [{ role: "user", content: message }];
   const resultCache = new Map<string, unknown>();
   const repeatCounts = new Map<string, number>();
@@ -154,7 +163,9 @@ export async function planAgent(
       let rawResult: unknown;
       try {
         rawResult = cached === undefined
-          ? await callReadTool(clients[modeForTool(item.tool.name)], item.tool.name, item.args, userId, row.id, onStatus)
+          ? item.tool.name === schemaTool.name
+            ? { tools: tools.filter(tool => tool.name !== schemaTool.name) }
+            : await callReadTool(clients[modeForTool(item.tool.name)], item.tool.name, item.args, userId, row.id, onStatus)
           : cached;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

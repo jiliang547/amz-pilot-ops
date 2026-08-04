@@ -1,66 +1,626 @@
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
-  id: text("id").primaryKey(), username: text("username").notNull().unique(),
-  passwordHash: text("password_hash").notNull(), passwordSalt: text("password_salt").notNull(),
-  role: text("role").notNull().default("operator"), mustChangePassword: integer("must_change_password", { mode: "boolean" }).notNull().default(false),
-  createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
-});
-export const sessions = sqliteTable("sessions", { tokenHash: text("token_hash").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), expiresAt: integer("expires_at").notNull(), createdAt: integer("created_at").notNull() });
-export const invites = sqliteTable("invites", { codeHash: text("code_hash").primaryKey(), createdBy: text("created_by").notNull().references(() => users.id), maxUses: integer("max_uses").notNull(), useCount: integer("use_count").notNull().default(0), expiresAt: integer("expires_at").notNull(), revokedAt: integer("revoked_at"), createdAt: integer("created_at").notNull() });
-export const accounts = sqliteTable("accounts", { id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), name: text("name").notNull(), region: text("region").notNull(), marketplace: text("marketplace"), timezone: text("timezone"), currency: text("currency"), profileId: text("profile_id").notNull(), advertiserAccountId: text("advertiser_account_id"), encryptedCredentials: text("encrypted_credentials").notNull(), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull() }, t => [uniqueIndex("accounts_user_profile_idx").on(t.userId, t.profileId)]);
-export const reportJobs = sqliteTable("report_jobs", { id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }), reportId: text("report_id"), createTool: text("create_tool").notNull(), requestFingerprint: text("request_fingerprint").notNull(), requestArgs: text("request_args").notNull(), status: text("status").notNull(), error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(), completedAt: integer("completed_at") }, t => [uniqueIndex("report_jobs_request_idx").on(t.userId, t.accountId, t.requestFingerprint)]);
-export const reportFiles = sqliteTable("report_files", { id: text("id").primaryKey(), reportJobId: text("report_job_id").notNull().references(() => reportJobs.id, { onDelete: "cascade" }), partNumber: integer("part_number").notNull(), objectKey: text("object_key").notNull().unique(), filename: text("filename").notNull(), contentType: text("content_type").notNull(), size: integer("size").notNull(), rowCount: integer("row_count").notNull(), summaryJson: text("summary_json").notNull(), createdAt: integer("created_at").notNull() }, t => [uniqueIndex("report_files_job_part_idx").on(t.reportJobId, t.partNumber)]);
-export const reportSnapshots = sqliteTable("report_snapshots", { id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }), reportType: text("report_type").notNull(), windowKey: text("window_key").notNull(), snapshotDate: text("snapshot_date").notNull(), startDate: text("start_date").notNull(), endDate: text("end_date").notNull(), reportId: text("report_id"), status: text("status").notNull(), attempts: integer("attempts").notNull().default(0), metricsJson: text("metrics_json"), error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(), completedAt: integer("completed_at") }, t => [uniqueIndex("report_snapshots_window_idx").on(t.accountId, t.reportType, t.windowKey, t.snapshotDate)]);
-export const adDailyFacts = sqliteTable("ad_daily_facts", {
   id: text("id").primaryKey(),
-  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  reportDate: text("report_date").notNull(), campaignId: text("campaign_id").notNull(), campaignName: text("campaign_name"),
-  adGroupId: text("ad_group_id").notNull(), adGroupName: text("ad_group_name"),
-  impressions: integer("impressions").notNull().default(0), clicks: integer("clicks").notNull().default(0),
-  cost: real("cost").notNull().default(0), purchases: real("purchases").notNull().default(0), sales: real("sales").notNull().default(0),
-  attributionFinal: integer("attribution_final", { mode: "boolean" }).notNull().default(false),
-  sourceReportId: text("source_report_id").notNull(), syncId: text("sync_id").notNull(), updatedAt: integer("updated_at").notNull(),
-}, t => [uniqueIndex("ad_daily_facts_key_idx").on(t.accountId, t.reportDate, t.campaignId, t.adGroupId), index("ad_daily_facts_range_idx").on(t.userId, t.accountId, t.reportDate), index("ad_daily_facts_sync_idx").on(t.accountId, t.syncId)]);
-export const adDataSyncs = sqliteTable("ad_data_syncs", {
-  id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }), syncDate: text("sync_date").notNull(),
-  mode: text("mode").notNull(), startDate: text("start_date").notNull(), endDate: text("end_date").notNull(), reportId: text("report_id"),
-  status: text("status").notNull(), rowsUpserted: integer("rows_upserted").notNull().default(0), error: text("error"),
-  createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(), completedAt: integer("completed_at"),
-}, t => [uniqueIndex("ad_data_syncs_account_date_idx").on(t.accountId, t.syncDate), index("ad_data_syncs_status_idx").on(t.userId, t.accountId, t.status, t.updatedAt)]);
-export const adKeywordDailyFacts = sqliteTable("ad_keyword_daily_facts", {
-  id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  reportDate: text("report_date").notNull(), campaignId: text("campaign_id").notNull(), campaignName: text("campaign_name"), adGroupId: text("ad_group_id").notNull(), adGroupName: text("ad_group_name"),
-  keywordId: text("keyword_id").notNull(), keyword: text("keyword").notNull(), keywordType: text("keyword_type"), matchType: text("match_type"), keywordBid: real("keyword_bid"), keywordStatus: text("keyword_status"),
-  impressions: integer("impressions").notNull().default(0), clicks: integer("clicks").notNull().default(0), cost: real("cost").notNull().default(0), purchases: real("purchases").notNull().default(0), sales: real("sales").notNull().default(0),
-  attributionFinal: integer("attribution_final", { mode: "boolean" }).notNull().default(false), sourceReportId: text("source_report_id").notNull(), syncId: text("sync_id").notNull(), updatedAt: integer("updated_at").notNull(),
-}, t => [uniqueIndex("ad_keyword_daily_facts_key_idx").on(t.accountId, t.reportDate, t.campaignId, t.adGroupId, t.keywordId), index("ad_keyword_daily_facts_range_idx").on(t.userId, t.accountId, t.reportDate), index("ad_keyword_daily_facts_sync_idx").on(t.accountId, t.syncId)]);
-export const adSearchTermDailyFacts = sqliteTable("ad_search_term_daily_facts", {
-  id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  reportDate: text("report_date").notNull(), campaignId: text("campaign_id").notNull(), campaignName: text("campaign_name"), adGroupId: text("ad_group_id").notNull(), adGroupName: text("ad_group_name"),
-  keywordId: text("keyword_id").notNull(), keyword: text("keyword"), keywordType: text("keyword_type"), matchType: text("match_type"), targeting: text("targeting"), searchTerm: text("search_term").notNull(),
-  impressions: integer("impressions").notNull().default(0), clicks: integer("clicks").notNull().default(0), cost: real("cost").notNull().default(0), purchases: real("purchases").notNull().default(0), sales: real("sales").notNull().default(0),
-  attributionFinal: integer("attribution_final", { mode: "boolean" }).notNull().default(false), sourceReportId: text("source_report_id").notNull(), syncId: text("sync_id").notNull(), updatedAt: integer("updated_at").notNull(),
-}, t => [uniqueIndex("ad_search_term_daily_facts_key_idx").on(t.accountId, t.reportDate, t.campaignId, t.adGroupId, t.keywordId, t.searchTerm), index("ad_search_term_daily_facts_range_idx").on(t.userId, t.accountId, t.reportDate), index("ad_search_term_daily_facts_sync_idx").on(t.accountId, t.syncId)]);
-export const adReportSyncs = sqliteTable("ad_report_syncs", {
-  id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  syncDate: text("sync_date").notNull(), reportKind: text("report_kind").notNull(), mode: text("mode").notNull(), triggerType: text("trigger_type").notNull().default("automatic"), startDate: text("start_date").notNull(), endDate: text("end_date").notNull(), reportId: text("report_id"),
-  status: text("status").notNull(), rowsUpserted: integer("rows_upserted").notNull().default(0), error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(), completedAt: integer("completed_at"),
-}, t => [uniqueIndex("ad_report_syncs_account_date_kind_idx").on(t.accountId, t.syncDate, t.reportKind), index("ad_report_syncs_status_idx").on(t.userId, t.accountId, t.status, t.updatedAt)]);
-export const adAnomalyAnalyses = sqliteTable("ad_anomaly_analyses", {
-  id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), accountId: text("account_id").notNull().references(() => accounts.id, { onDelete: "cascade" }),
-  analysisDate: text("analysis_date").notNull(), reportKind: text("report_kind").notNull(), startDate: text("start_date").notNull(), endDate: text("end_date").notNull(), modelName: text("model_name").notNull(), status: text("status").notNull(), prompt: text("prompt").notNull(),
-  summary: text("summary"), anomaliesJson: text("anomalies_json"), rawResponse: text("raw_response"), error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(), completedAt: integer("completed_at"),
-}, t => [uniqueIndex("ad_anomaly_analyses_account_date_kind_idx").on(t.accountId, t.analysisDate, t.reportKind), index("ad_anomaly_analyses_history_idx").on(t.userId, t.accountId, t.analysisDate)]);
-export const modelSettings = sqliteTable("model_settings", { userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }), baseUrl: text("base_url").notNull(), modelName: text("model_name").notNull(), userAgent: text("user_agent"), encryptedApiKey: text("encrypted_api_key").notNull(), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull() });
-export const conversations = sqliteTable("conversations", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id").notNull(), title: text("title").notNull(), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull() });
-export const messages = sqliteTable("messages", { id: text("id").primaryKey(), conversationId: text("conversation_id").notNull(), role: text("role").notNull(), content: text("content").notNull(), createdAt: integer("created_at").notNull() });
-export const attachments = sqliteTable("attachments", { id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), conversationId: text("conversation_id"), messageId: text("message_id"), objectKey: text("object_key").notNull().unique(), filename: text("filename").notNull(), contentType: text("content_type").notNull(), size: integer("size").notNull(), createdAt: integer("created_at").notNull() });
-export const customSkills = sqliteTable("custom_skills", { id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), name: text("name").notNull(), description: text("description").notNull(), instructions: text("instructions").notNull(), objectKey: text("object_key").notNull().unique(), filename: text("filename").notNull(), contentType: text("content_type").notNull(), size: integer("size").notNull(), enabled: integer("enabled", { mode: "boolean" }).notNull().default(true), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull() }, t => [uniqueIndex("custom_skills_user_name_idx").on(t.userId, t.name)]);
-export const approvals = sqliteTable("approvals", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id").notNull(), toolName: text("tool_name").notNull(), toolArgs: text("tool_args").notNull(), summary: text("summary").notNull(), status: text("status").notNull(), result: text("result"), createdAt: integer("created_at").notNull(), executedAt: integer("executed_at") });
-export const tasks = sqliteTable("tasks", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id").notNull(), name: text("name").notNull(), prompt: text("prompt").notNull(), scheduleType: text("schedule_type").notNull(), scheduledTime: text("scheduled_time").notNull(), timezone: text("timezone").notNull(), dayOfWeek: integer("day_of_week"), requireApproval: integer("require_approval", { mode: "boolean" }).notNull().default(true), status: text("status").notNull(), nextRunAt: integer("next_run_at").notNull(), lastRunAt: integer("last_run_at"), createdAt: integer("created_at").notNull() });
-export const taskRuns = sqliteTable("task_runs", { id: text("id").primaryKey(), taskId: text("task_id").notNull(), status: text("status").notNull(), detail: text("detail"), startedAt: integer("started_at").notNull(), finishedAt: integer("finished_at") });
-export const auditLogs = sqliteTable("audit_logs", { id: text("id").primaryKey(), userId: text("user_id").notNull(), accountId: text("account_id"), action: text("action").notNull(), target: text("target"), detail: text("detail"), outcome: text("outcome").notNull(), createdAt: integer("created_at").notNull() });
-export const loginAttempts = sqliteTable("login_attempts", { id: text("id").primaryKey(), username: text("username").notNull(), ipHash: text("ip_hash").notNull(), success: integer("success", { mode: "boolean" }).notNull(), createdAt: integer("created_at").notNull() });
+  username: text("username").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  passwordSalt: text("password_salt").notNull(),
+  role: text("role").notNull().default("operator"),
+  mustChangePassword: integer("must_change_password", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const sessions = sqliteTable("sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: integer("expires_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+export const invites = sqliteTable("invites", {
+  codeHash: text("code_hash").primaryKey(),
+  createdBy: text("created_by")
+    .notNull()
+    .references(() => users.id),
+  maxUses: integer("max_uses").notNull(),
+  useCount: integer("use_count").notNull().default(0),
+  expiresAt: integer("expires_at").notNull(),
+  revokedAt: integer("revoked_at"),
+  createdAt: integer("created_at").notNull(),
+});
+export const accounts = sqliteTable(
+  "accounts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    region: text("region").notNull(),
+    marketplace: text("marketplace"),
+    timezone: text("timezone"),
+    currency: text("currency"),
+    profileId: text("profile_id").notNull(),
+    advertiserAccountId: text("advertiser_account_id"),
+    encryptedCredentials: text("encrypted_credentials").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [uniqueIndex("accounts_user_profile_idx").on(t.userId, t.profileId)],
+);
+export const reportJobs = sqliteTable(
+  "report_jobs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    reportId: text("report_id"),
+    createTool: text("create_tool").notNull(),
+    requestFingerprint: text("request_fingerprint").notNull(),
+    requestArgs: text("request_args").notNull(),
+    status: text("status").notNull(),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("report_jobs_request_idx").on(
+      t.userId,
+      t.accountId,
+      t.requestFingerprint,
+    ),
+  ],
+);
+export const reportFiles = sqliteTable(
+  "report_files",
+  {
+    id: text("id").primaryKey(),
+    reportJobId: text("report_job_id")
+      .notNull()
+      .references(() => reportJobs.id, { onDelete: "cascade" }),
+    partNumber: integer("part_number").notNull(),
+    objectKey: text("object_key").notNull().unique(),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    size: integer("size").notNull(),
+    rowCount: integer("row_count").notNull(),
+    summaryJson: text("summary_json").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("report_files_job_part_idx").on(t.reportJobId, t.partNumber),
+  ],
+);
+export const reportSnapshots = sqliteTable(
+  "report_snapshots",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    reportType: text("report_type").notNull(),
+    windowKey: text("window_key").notNull(),
+    snapshotDate: text("snapshot_date").notNull(),
+    startDate: text("start_date").notNull(),
+    endDate: text("end_date").notNull(),
+    reportId: text("report_id"),
+    status: text("status").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    metricsJson: text("metrics_json"),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("report_snapshots_window_idx").on(
+      t.accountId,
+      t.reportType,
+      t.windowKey,
+      t.snapshotDate,
+    ),
+  ],
+);
+export const adDailyFacts = sqliteTable(
+  "ad_daily_facts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    reportDate: text("report_date").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    campaignName: text("campaign_name"),
+    adGroupId: text("ad_group_id").notNull(),
+    adGroupName: text("ad_group_name"),
+    impressions: integer("impressions").notNull().default(0),
+    clicks: integer("clicks").notNull().default(0),
+    cost: real("cost").notNull().default(0),
+    purchases: real("purchases").notNull().default(0),
+    sales: real("sales").notNull().default(0),
+    attributionFinal: integer("attribution_final", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    sourceReportId: text("source_report_id").notNull(),
+    syncId: text("sync_id").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ad_daily_facts_key_idx").on(
+      t.accountId,
+      t.reportDate,
+      t.campaignId,
+      t.adGroupId,
+    ),
+    index("ad_daily_facts_range_idx").on(t.userId, t.accountId, t.reportDate),
+    index("ad_daily_facts_sync_idx").on(t.accountId, t.syncId),
+  ],
+);
+export const adDataSyncs = sqliteTable(
+  "ad_data_syncs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    syncDate: text("sync_date").notNull(),
+    mode: text("mode").notNull(),
+    startDate: text("start_date").notNull(),
+    endDate: text("end_date").notNull(),
+    reportId: text("report_id"),
+    status: text("status").notNull(),
+    rowsUpserted: integer("rows_upserted").notNull().default(0),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("ad_data_syncs_account_date_idx").on(t.accountId, t.syncDate),
+    index("ad_data_syncs_status_idx").on(
+      t.userId,
+      t.accountId,
+      t.status,
+      t.updatedAt,
+    ),
+  ],
+);
+export const adKeywordDailyFacts = sqliteTable(
+  "ad_keyword_daily_facts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    reportDate: text("report_date").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    campaignName: text("campaign_name"),
+    adGroupId: text("ad_group_id").notNull(),
+    adGroupName: text("ad_group_name"),
+    keywordId: text("keyword_id").notNull(),
+    keyword: text("keyword").notNull(),
+    keywordType: text("keyword_type"),
+    matchType: text("match_type"),
+    keywordBid: real("keyword_bid"),
+    keywordStatus: text("keyword_status"),
+    impressions: integer("impressions").notNull().default(0),
+    clicks: integer("clicks").notNull().default(0),
+    cost: real("cost").notNull().default(0),
+    purchases: real("purchases").notNull().default(0),
+    sales: real("sales").notNull().default(0),
+    attributionFinal: integer("attribution_final", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    sourceReportId: text("source_report_id").notNull(),
+    syncId: text("sync_id").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ad_keyword_daily_facts_key_idx").on(
+      t.accountId,
+      t.reportDate,
+      t.campaignId,
+      t.adGroupId,
+      t.keywordId,
+    ),
+    index("ad_keyword_daily_facts_range_idx").on(
+      t.userId,
+      t.accountId,
+      t.reportDate,
+    ),
+    index("ad_keyword_daily_facts_sync_idx").on(t.accountId, t.syncId),
+  ],
+);
+export const adSearchTermDailyFacts = sqliteTable(
+  "ad_search_term_daily_facts",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    reportDate: text("report_date").notNull(),
+    campaignId: text("campaign_id").notNull(),
+    campaignName: text("campaign_name"),
+    adGroupId: text("ad_group_id").notNull(),
+    adGroupName: text("ad_group_name"),
+    keywordId: text("keyword_id").notNull(),
+    keyword: text("keyword"),
+    keywordType: text("keyword_type"),
+    matchType: text("match_type"),
+    targeting: text("targeting"),
+    searchTerm: text("search_term").notNull(),
+    impressions: integer("impressions").notNull().default(0),
+    clicks: integer("clicks").notNull().default(0),
+    cost: real("cost").notNull().default(0),
+    purchases: real("purchases").notNull().default(0),
+    sales: real("sales").notNull().default(0),
+    attributionFinal: integer("attribution_final", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    sourceReportId: text("source_report_id").notNull(),
+    syncId: text("sync_id").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("ad_search_term_daily_facts_key_idx").on(
+      t.accountId,
+      t.reportDate,
+      t.campaignId,
+      t.adGroupId,
+      t.keywordId,
+      t.searchTerm,
+    ),
+    index("ad_search_term_daily_facts_range_idx").on(
+      t.userId,
+      t.accountId,
+      t.reportDate,
+    ),
+    index("ad_search_term_daily_facts_sync_idx").on(t.accountId, t.syncId),
+  ],
+);
+export const adReportSyncs = sqliteTable(
+  "ad_report_syncs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    syncDate: text("sync_date").notNull(),
+    reportKind: text("report_kind").notNull(),
+    mode: text("mode").notNull(),
+    triggerType: text("trigger_type").notNull().default("automatic"),
+    startDate: text("start_date").notNull(),
+    endDate: text("end_date").notNull(),
+    reportId: text("report_id"),
+    status: text("status").notNull(),
+    rowsUpserted: integer("rows_upserted").notNull().default(0),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("ad_report_syncs_account_date_kind_idx").on(
+      t.accountId,
+      t.syncDate,
+      t.reportKind,
+    ),
+    index("ad_report_syncs_status_idx").on(
+      t.userId,
+      t.accountId,
+      t.status,
+      t.updatedAt,
+    ),
+  ],
+);
+export const adAnomalyAnalyses = sqliteTable(
+  "ad_anomaly_analyses",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    analysisDate: text("analysis_date").notNull(),
+    reportKind: text("report_kind").notNull(),
+    startDate: text("start_date").notNull(),
+    endDate: text("end_date").notNull(),
+    modelName: text("model_name").notNull(),
+    status: text("status").notNull(),
+    prompt: text("prompt").notNull(),
+    summary: text("summary"),
+    anomaliesJson: text("anomalies_json"),
+    rawResponse: text("raw_response"),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (t) => [
+    uniqueIndex("ad_anomaly_analyses_account_date_kind_idx").on(
+      t.accountId,
+      t.analysisDate,
+      t.reportKind,
+    ),
+    index("ad_anomaly_analyses_history_idx").on(
+      t.userId,
+      t.accountId,
+      t.analysisDate,
+    ),
+  ],
+);
+export const modelSettings = sqliteTable("model_settings", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  baseUrl: text("base_url").notNull(),
+  modelName: text("model_name").notNull(),
+  userAgent: text("user_agent"),
+  encryptedApiKey: text("encrypted_api_key").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const siteModels = sqliteTable(
+  "site_models",
+  {
+    id: text("id").primaryKey(),
+    displayName: text("display_name").notNull(),
+    baseUrl: text("base_url").notNull(),
+    modelName: text("model_name").notNull(),
+    userAgent: text("user_agent"),
+    encryptedApiKey: text("encrypted_api_key").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [index("site_models_enabled_idx").on(t.enabled, t.updatedAt)],
+);
+export const userModelSelections = sqliteTable("user_model_selections", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  source: text("source").notNull(),
+  presetModelId: text("preset_model_id").references(() => siteModels.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const reviewApiSettings = sqliteTable("review_api_settings", {
+  id: integer("id").primaryKey().default(1),
+  encryptedApiKey: text("encrypted_api_key").notNull(),
+  updatedBy: text("updated_by")
+    .notNull()
+    .references(() => users.id),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const reviewTasks = sqliteTable(
+  "review_tasks",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    asin: text("asin").notNull(),
+    marketplace: text("marketplace").notNull(),
+    pages: integer("pages").notNull(),
+    starMode: text("star_mode").notNull(),
+    starsJson: text("stars_json").notNull(),
+    sortBy: text("sort_by").notNull(),
+    reviewerType: text("reviewer_type").notNull(),
+    mediaType: text("media_type").notNull(),
+    variant: text("variant").notNull(),
+    status: text("status").notNull(),
+    upstreamTasksJson: text("upstream_tasks_json").notNull(),
+    reviewCount: integer("review_count").notNull().default(0),
+    error: text("error"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+  },
+  (table) => [
+    index("review_tasks_user_time_idx").on(table.userId, table.createdAt),
+    index("review_tasks_status_idx").on(
+      table.userId,
+      table.status,
+      table.updatedAt,
+    ),
+  ],
+);
+export const reviewItems = sqliteTable(
+  "review_items",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => reviewTasks.id, { onDelete: "cascade" }),
+    reviewId: text("review_id").notNull(),
+    asin: text("asin").notNull(),
+    marketplace: text("marketplace").notNull(),
+    userName: text("user_name"),
+    rating: integer("rating").notNull(),
+    title: text("title"),
+    reviewDate: text("review_date"),
+    reviewContent: text("review_content"),
+    verifiedPurchase: integer("verified_purchase", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    helpfulVotes: integer("helpful_votes").notNull().default(0),
+    productVariant: text("product_variant"),
+    imagesJson: text("images_json").notNull().default("[]"),
+    page: integer("page").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("review_items_task_review_idx").on(
+      table.taskId,
+      table.reviewId,
+    ),
+    index("review_items_task_rating_idx").on(
+      table.taskId,
+      table.rating,
+      table.reviewDate,
+    ),
+  ],
+);
+export const modelTokenUsage = sqliteTable(
+  "model_token_usage",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    modelName: text("model_name").notNull(),
+    modelSource: text("model_source").notNull(),
+    operation: text("operation").notNull(),
+    inputTokens: integer("input_tokens").notNull().default(0),
+    outputTokens: integer("output_tokens").notNull().default(0),
+    providerReported: integer("provider_reported", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("model_token_usage_user_time_idx").on(table.userId, table.createdAt),
+  ],
+);
+export const conversations = sqliteTable("conversations", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  accountId: text("account_id").notNull(),
+  title: text("title").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+export const messages = sqliteTable("messages", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id").notNull(),
+  role: text("role").notNull(),
+  content: text("content").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+export const attachments = sqliteTable("attachments", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  conversationId: text("conversation_id"),
+  messageId: text("message_id"),
+  objectKey: text("object_key").notNull().unique(),
+  filename: text("filename").notNull(),
+  contentType: text("content_type").notNull(),
+  size: integer("size").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+export const customSkills = sqliteTable(
+  "custom_skills",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    instructions: text("instructions").notNull(),
+    objectKey: text("object_key").notNull().unique(),
+    filename: text("filename").notNull(),
+    contentType: text("content_type").notNull(),
+    size: integer("size").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => [uniqueIndex("custom_skills_user_name_idx").on(t.userId, t.name)],
+);
+export const approvals = sqliteTable("approvals", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  accountId: text("account_id").notNull(),
+  toolName: text("tool_name").notNull(),
+  toolArgs: text("tool_args").notNull(),
+  summary: text("summary").notNull(),
+  status: text("status").notNull(),
+  result: text("result"),
+  createdAt: integer("created_at").notNull(),
+  executedAt: integer("executed_at"),
+});
+export const tasks = sqliteTable("tasks", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  accountId: text("account_id").notNull(),
+  name: text("name").notNull(),
+  prompt: text("prompt").notNull(),
+  scheduleType: text("schedule_type").notNull(),
+  scheduledTime: text("scheduled_time").notNull(),
+  timezone: text("timezone").notNull(),
+  dayOfWeek: integer("day_of_week"),
+  requireApproval: integer("require_approval", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  status: text("status").notNull(),
+  nextRunAt: integer("next_run_at").notNull(),
+  lastRunAt: integer("last_run_at"),
+  createdAt: integer("created_at").notNull(),
+});
+export const taskRuns = sqliteTable("task_runs", {
+  id: text("id").primaryKey(),
+  taskId: text("task_id").notNull(),
+  status: text("status").notNull(),
+  detail: text("detail"),
+  startedAt: integer("started_at").notNull(),
+  finishedAt: integer("finished_at"),
+});
+export const auditLogs = sqliteTable("audit_logs", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  accountId: text("account_id"),
+  action: text("action").notNull(),
+  target: text("target"),
+  detail: text("detail"),
+  outcome: text("outcome").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+export const loginAttempts = sqliteTable("login_attempts", {
+  id: text("id").primaryKey(),
+  username: text("username").notNull(),
+  ipHash: text("ip_hash").notNull(),
+  success: integer("success", { mode: "boolean" }).notNull(),
+  createdAt: integer("created_at").notNull(),
+});

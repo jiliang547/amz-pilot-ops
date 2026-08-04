@@ -1,0 +1,54 @@
+{
+    "name":  "amz-pilot-ops",
+    "main":  "dist/server/index.js",
+    "compatibility_date":  "2026-07-28",
+    "compatibility_flags":  [
+                                "nodejs_compat"
+                            ],
+    "assets":  {
+                   "directory":  "dist/client"
+               },
+    "d1_databases":  [
+                         {
+                             "binding":  "DB",
+                             "database_name":  "amz-pilot-ops",
+                             "database_id":  "e3ea5f58-883d-4d7d-a74a-a870f1dbb22d"
+                         }
+                     ],
+    "r2_buckets":  [
+                       {
+                           "binding":  "FILES",
+                           "bucket_name":  "amz-pilot-ops-files"
+                       }
+                   ],
+    "images":  {
+                   "binding":  "IMAGES"
+               },
+    "triggers":  {
+                     "crons":  [
+                                   "*/5 * * * *"
+                               ]
+                 },
+    "containers":  [
+                       {
+                           "class_name":  "RankTrackerContainer",
+                           "image":  "./cloudbase-proxy/Dockerfile.rank",
+                           "max_instances":  1,
+                           "instance_type":  "basic"
+                       }
+                   ],
+    "durable_objects":  {
+                            "bindings":  [
+                                             {
+                                                 "name":  "RANK_CONTAINER",
+                                                 "class_name":  "RankTrackerContainer"
+                            }
+                        ]
+    },
+    "exports":  {
+                    "RankTrackerContainer":  {
+                                                  "type":  "durable-object",
+                                                  "storage":  "sqlite"
+                                              }
+                }
+}
