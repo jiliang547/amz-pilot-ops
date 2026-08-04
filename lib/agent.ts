@@ -147,6 +147,7 @@ async function planAgentCore(
       const write = writes[0], id = crypto.randomUUID();
       const summary = decision.content.trim() || `准备执行 ${write.tool.name}。请核对目标账户、对象 ID 和参数后再批准。`;
       await d1().prepare(`INSERT INTO approvals(id,user_id,account_id,tool_name,tool_args,summary,status,created_at) VALUES(?,?,?,?,?,?,?,?)`).bind(id, userId, row.id, write.tool.name, JSON.stringify(write.args), summary, "pending", Date.now()).run();
+      await log("approval.created", { round, toolName: write.tool.name, input: write.args, output: summary, status: "pending" });
       return { type: "approval" as const, id, summary, toolName: write.tool.name, args: write.args, accountId: row.id, modelRounds: round };
     }
 
