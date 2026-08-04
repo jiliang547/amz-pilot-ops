@@ -38,6 +38,7 @@ export default function StoreManagerView() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [replenishmentFilter, setReplenishmentFilter] = useState<"needs" | "all">("needs");
   const [approval, setApproval] = useState<Approval>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
@@ -71,7 +72,7 @@ export default function StoreManagerView() {
 
   async function runInventory() {
     if (!settings.configured) { setSettingsOpen(true); return; }
-    setBusy(true); setSnapshot(null); setStatus("正在启动库存与补货预估");
+    setBusy(true); setSnapshot(null); setReplenishmentFilter("needs"); setStatus("正在启动库存与补货预估");
     try {
       const response = await fetch("/api/store/inventory", { method: "POST" });
       await consumeSse(response, (event, data) => {
@@ -82,6 +83,10 @@ export default function StoreManagerView() {
     } catch (error) { setStatus(error instanceof Error ? error.message : "补货预估失败"); }
     finally { setBusy(false); }
   }
+
+  const replenishmentRows = snapshot
+    ? snapshot.rows.filter(row => replenishmentFilter === "all" || row.recommendedReplenishment > 0)
+    : [];
 
   async function send() {
     const text = input.trim();
@@ -169,10 +174,11 @@ export default function StoreManagerView() {
         </aside>
       </section>
 
-      {snapshot && <section className="store-table-card">
-        <div className="store-table-head"><div><div className="store-table-title"><strong>库存与补货建议</strong><span className="store-table-badge">{snapshot.totals.skuCount} 个 SKU</span></div><span>{snapshot.marketplace.name} · {new Date(snapshot.generatedAt).toLocaleString()}</span></div><button onClick={runInventory} disabled={busy}>↻ 刷新</button></div>
-        <div className="store-table-wrap"><table><thead><tr><th>SKU / ASIN</th><th>库存</th><th>7天销量</th><th>30天销量</th><th>日销量</th><th>150天目标</th><th>建议补货</th></tr></thead><tbody>
-          {snapshot.rows.map(row => <tr key={row.sku}><td><b>{row.sku}</b><span>{row.asin}{row.productName ? ` · ${row.productName}` : ""}</span></td><td>{row.inventory}</td><td>{row.sales7}</td><td>{row.sales30}</td><td>{row.dailySales.toFixed(2)}</td><td>{row.targetInventory}</td><td className={row.recommendedReplenishment > 0 ? "needs-stock" : ""}>{row.recommendedReplenishment}</td></tr>)}
+      {snapshot && <section className="store-table-card store-replenishment-card">
+        <div className="store-table-head"><div><div className="store-table-title"><strong>补货执行清单</strong><span className="store-table-badge">{replenishmentRows.length} 个 SKU</span></div><span>{snapshot.marketplace.name} · 已按建议补货量从高到低排序 · {new Date(snapshot.generatedAt).toLocaleString()}</span></div><button onClick={runInventory} disabled={busy}>↻ 刷新数据</button></div>
+        <div className="store-table-toolbar"><div><b>运营视图</b><span>优先处理红色标记的 SKU</span></div><div className="store-filter"><button className={replenishmentFilter === "needs" ? "active" : ""} onClick={() => setReplenishmentFilter("needs")}>仅需补货 <em>{snapshot.rows.filter(row => row.recommendedReplenishment > 0).length}</em></button><button className={replenishmentFilter === "all" ? "active" : ""} onClick={() => setReplenishmentFilter("all")}>全部 SKU <em>{snapshot.rows.length}</em></button></div></div>
+        <div className="store-table-wrap"><table><thead><tr><th>SKU / ASIN</th><th>当前库存</th><th>7天销量</th><th>30天销量</th><th>日均销量</th><th>150天目标</th><th>建议补货</th><th>状态</th></tr></thead><tbody>
+          {replenishmentRows.length ? replenishmentRows.map(row => <tr key={row.sku}><td><b>{row.sku}</b><span>{row.asin}{row.productName ? ` · ${row.productName}` : ""}</span></td><td className="inventory-value">{row.inventory}</td><td>{row.sales7}</td><td>{row.sales30}</td><td>{row.dailySales.toFixed(2)}</td><td>{row.targetInventory}</td><td className={row.recommendedReplenishment > 0 ? "needs-stock replenish-value" : "replenish-value"}>{row.recommendedReplenishment}</td><td><span className={row.recommendedReplenishment > 0 ? "stock-status need" : "stock-status enough"}>{row.recommendedReplenishment > 0 ? "需要补货" : "库存充足"}</span></td></tr>) : <tr><td className="store-table-empty" colSpan={8}>当前没有需要补货的 SKU</td></tr>}
         </tbody></table></div>
       </section>}
 
