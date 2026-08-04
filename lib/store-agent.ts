@@ -64,6 +64,31 @@ async function modelReply(userId: string, messages: AgentMessage[]) {
   return reply;
 }
 
+async function reviewStoreResult(userId: string, prompt: string, toolName: string, toolResult: string, proposedAnswer: string) {
+  const config = await modelConfigForUser(userId);
+  const reviewPrompt = `You are a semantic result reviewer for an Amazon store operations agent.
+Decide whether the proposed answer is supported by the tool result and actually answers the user's request.
+Judge business meaning, date range, metric definition, and entity scope, not just API syntax.
+Return JSON only: {"satisfied":true|false,"reason":"short reason","retryHint":"what tool or data should be tried next if false"}.
+User request: ${prompt}
+Tool used: ${toolName}
+Tool result: ${toolResult.slice(0, 30000)}
+Proposed answer: ${proposedAnswer.slice(0, 12000)}`;
+  const requestBody = { model: config.modelName, messages: [{ role: "system", content: "Review semantic correctness only. Return JSON only." }, { role: "user", content: reviewPrompt }], stream: false, temperature: 0 };
+  const response = await fetch(modelEndpoint(config), { method: "POST", headers: modelHeaders(config), body: JSON.stringify(requestBody) });
+  if (!response.ok) throw new Error(`Result review failed (${response.status})`);
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string | null } }>; usage?: ProviderUsage };
+  const content = data.choices?.[0]?.message?.content ?? "";
+  await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: "store.agent.review", usage: data.usage, request: requestBody, response: content });
+  try {
+    const jsonText = content.match(/\{[\s\S]*\}/)?.[0] ?? content;
+    const parsed = JSON.parse(jsonText) as { satisfied?: boolean; reason?: string; retryHint?: string };
+    return { satisfied: parsed.satisfied === true, reason: String(parsed.reason ?? ""), retryHint: String(parsed.retryHint ?? "") };
+  } catch {
+    return { satisfied: false, reason: "Semantic reviewer returned invalid JSON", retryHint: "Re-check the request with a different tool" };
+  }
+}
+
 async function createApproval(userId: string, endpoint: string, parameters: Record<string, unknown>) {
   const definition = endpointById(endpoint);
   const id = crypto.randomUUID();
@@ -78,10 +103,30 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
   const client = new SpApiClient(connection);
   const messages: AgentMessage[] = [{ role: "user", content: prompt }];
   const seen = new Map<string, number>();
+  let latestEvidence: { toolName: string; result: string } | undefined;
   for (let round = 1; round <= 20; round++) {
     status(`店铺 Agent 第 ${round}/20 轮：正在思考并选择 SP-API 工具`);
     const decision = await modelReply(userId, messages);
-    if (!decision.toolCalls.length) return { type: "answer" as const, content: decision.content || "任务已完成。", modelRounds: round };
+    if (!decision.toolCalls.length) {
+      if (latestEvidence && decision.content) {
+        status("正在复核结果是否真正回答了问题");
+        let review: { satisfied: boolean; reason: string; retryHint: string };
+        try {
+          review = await reviewStoreResult(userId, prompt, latestEvidence.toolName, latestEvidence.result, decision.content);
+        } catch {
+          review = { satisfied: true, reason: "", retryHint: "" };
+          status("语义复核服务暂不可用，继续交付已有结果");
+        }
+        if (!review.satisfied) {
+          status("结果口径不匹配，Agent 正在自动更换工具重试");
+          messages.push({ role: "assistant", content: decision.content });
+          messages.push({ role: "user", content: `系统复核未通过：${review.reason}。请不要直接交付上一结果，请根据用户原问题换一个更合适的工具重新查询。建议：${review.retryHint}` });
+          latestEvidence = undefined;
+          continue;
+        }
+      }
+      return { type: "answer" as const, content: decision.content || "任务已完成。", modelRounds: round };
+    }
     messages.push({ role: "assistant", content: decision.content, tool_calls: decision.toolCalls });
     for (const call of decision.toolCalls) {
       const args = parseJson(call.function.arguments);
@@ -114,6 +159,9 @@ export async function runStoreAgent(userId: string, prompt: string, status: (tex
         result = { isError: true, error: error instanceof Error ? error.message : String(error), instruction: "请修正 Endpoint ID 或参数后继续尝试，不要直接放弃。" };
       }
       const serialized = JSON.stringify(result);
+      if (!(result && typeof result === "object" && (result as { isError?: boolean }).isError)) {
+        latestEvidence = { toolName: call.function.name, result: serialized };
+      }
       messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: serialized.length > 120_000 ? serialized.slice(0, 120_000) + "\n[结果已截断，请总结现有结果]" : serialized });
     }
   }
