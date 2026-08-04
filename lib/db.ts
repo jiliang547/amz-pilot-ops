@@ -62,6 +62,7 @@ export function ensureSchema(): Promise<void> {
       `CREATE TABLE IF NOT EXISTS task_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, started_at INTEGER NOT NULL, finished_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT, action TEXT NOT NULL, target TEXT, detail TEXT, outcome TEXT NOT NULL, created_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS agent_logs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT, agent TEXT NOT NULL, run_id TEXT NOT NULL, event_type TEXT NOT NULL, round INTEGER, tool_name TEXT, input_json TEXT, output_json TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS maintenance_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS login_attempts (id TEXT PRIMARY KEY, username TEXT NOT NULL, ip_hash TEXT NOT NULL, success INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS rank_tracker_settings (user_id TEXT PRIMARY KEY, encrypted_proxies TEXT NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS sp_api_settings (user_id TEXT PRIMARY KEY, encrypted_credentials TEXT NOT NULL, region TEXT NOT NULL, marketplace_id TEXT NOT NULL, marketplace_name TEXT NOT NULL, country_code TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,

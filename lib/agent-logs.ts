@@ -3,6 +3,7 @@ import { d1, ensureSchema } from "./db";
 export type AgentKind = "ads" | "store";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
 
 function clip(value: unknown, max = 60_000) {
   const text = typeof value === "string" ? value : JSON.stringify(value ?? null);
@@ -44,6 +45,12 @@ export async function finishAgentLog(userId: string, agent: AgentKind, runId: st
 
 export async function purgeExpiredAgentLogs() {
   try {
-    await d1().prepare(`DELETE FROM agent_logs WHERE created_at < ?`).bind(Date.now() - RETENTION_MS).run();
+    const now = Date.now();
+    const state = await d1().prepare(`SELECT value FROM maintenance_state WHERE key=?`).bind("agent_logs_cleanup").first<{ value: number }>();
+    if (state && now - Number(state.value) < CLEANUP_INTERVAL_MS) return;
+    await d1().batch([
+      d1().prepare(`DELETE FROM agent_logs WHERE created_at < ?`).bind(now - RETENTION_MS),
+      d1().prepare(`INSERT INTO maintenance_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind("agent_logs_cleanup", now),
+    ]);
   } catch { /* Cleanup is best effort. */ }
 }
