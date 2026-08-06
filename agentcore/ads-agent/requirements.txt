@@ -1,0 +1,12 @@
+fastapi>=0.116,<1
+uvicorn>=0.35,<1
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+langgraph>=1.0,<2
+langchain-mcp-adapters>=0.2,<1
+# langchain-mcp-adapters 0.3.x still imports the MCP 1.x RequestContext API.
+mcp>=1.24,<2
+pydantic>=2.11,<3
+python-dotenv>=1.1,<2
+httpx>=0.28,<1

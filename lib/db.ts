@@ -2,6 +2,19 @@ import { env } from "cloudflare:workers";
 
 export type AppEnv = {
   DB: D1Database;
+  ADS_AGENT_STATE?: { getByName(name: string): unknown };
+  ENHANCED_ADS_WORKFLOW?: {
+    create(options: { id: string; params: Record<string, unknown> }): Promise<{ id: string; status(): Promise<unknown> }>;
+    get(id: string): Promise<{ status(): Promise<unknown>; sendEvent(event: { type: string; payload: unknown }): Promise<void> }>;
+  };
+  ENHANCED_ADS_CONTAINER?: {
+    getByName(name: string): Fetcher & {
+      startAndWaitForPorts(options?: {
+        ports?: number[];
+        cancellationOptions?: { portReadyTimeoutMS?: number; instanceGetTimeoutMS?: number };
+      }): Promise<void>;
+    };
+  };
   FILES?: R2Bucket;
   CREDENTIAL_ENCRYPTION_KEY?: string;
   MODEL_BASE_URL?: string;
@@ -9,6 +22,7 @@ export type AppEnv = {
   MODEL_NAME?: string;
   MODEL_USER_AGENT?: string;
   AMAZON_MCP_URL?: string;
+  ADS_AGENT_VERSION?: string;
   RANK_TRACKER_URL?: string;
   BOOTSTRAP_AMAZON_CREDENTIALS?: string;
   CRON_SECRET?: string;
@@ -62,10 +76,14 @@ export function ensureSchema(): Promise<void> {
       `CREATE TABLE IF NOT EXISTS task_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, status TEXT NOT NULL, detail TEXT, started_at INTEGER NOT NULL, finished_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS audit_logs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT, action TEXT NOT NULL, target TEXT, detail TEXT, outcome TEXT NOT NULL, created_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS agent_logs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT, agent TEXT NOT NULL, run_id TEXT NOT NULL, event_type TEXT NOT NULL, round INTEGER, tool_name TEXT, input_json TEXT, output_json TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS enhanced_ads_runs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, prompt TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL, round INTEGER NOT NULL DEFAULT 0, tool_count INTEGER NOT NULL DEFAULT 0, answer TEXT, error TEXT, approval_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, completed_at INTEGER, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS enhanced_ads_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, user_id TEXT NOT NULL, account_id TEXT NOT NULL, run_id TEXT, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS enhanced_ads_events (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, user_id TEXT NOT NULL, account_id TEXT NOT NULL, event_type TEXT NOT NULL, round INTEGER, tool_name TEXT, input_json TEXT, output_json TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY(run_id) REFERENCES enhanced_ads_runs(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS enhanced_ads_oauth_states (state_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, encrypted_payload TEXT NOT NULL, redirect_uri TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS maintenance_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS login_attempts (id TEXT PRIMARY KEY, username TEXT NOT NULL, ip_hash TEXT NOT NULL, success INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS rank_tracker_settings (user_id TEXT PRIMARY KEY, encrypted_proxies TEXT NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
-      `CREATE TABLE IF NOT EXISTS sp_api_settings (user_id TEXT PRIMARY KEY, encrypted_credentials TEXT NOT NULL, region TEXT NOT NULL, marketplace_id TEXT NOT NULL, marketplace_name TEXT NOT NULL, country_code TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
+      `CREATE TABLE IF NOT EXISTS sp_api_settings (user_id TEXT PRIMARY KEY, encrypted_credentials TEXT NOT NULL, region TEXT NOT NULL, marketplace_id TEXT NOT NULL, marketplace_name TEXT NOT NULL, country_code TEXT NOT NULL, seller_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
       `CREATE TABLE IF NOT EXISTS rank_history (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, asin TEXT NOT NULL, keyword TEXT NOT NULL, status TEXT NOT NULL, rank INTEGER, page INTEGER, position INTEGER, variant_asin TEXT, variant_asins_json TEXT, sponsored_count INTEGER, total_results INTEGER, proxy_host TEXT, actual_ip TEXT, error TEXT, scraped_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)`,
       `CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id)`,
       `CREATE INDEX IF NOT EXISTS site_models_enabled_idx ON site_models(enabled,updated_at)`,
@@ -80,6 +98,10 @@ export function ensureSchema(): Promise<void> {
       `CREATE INDEX IF NOT EXISTS audit_user_idx ON audit_logs(user_id,created_at)`,
       `CREATE INDEX IF NOT EXISTS agent_logs_user_time_idx ON agent_logs(user_id,created_at)`,
       `CREATE INDEX IF NOT EXISTS agent_logs_run_idx ON agent_logs(user_id,run_id,created_at)`,
+      `CREATE INDEX IF NOT EXISTS enhanced_ads_runs_user_time_idx ON enhanced_ads_runs(user_id,created_at)`,
+      `CREATE INDEX IF NOT EXISTS enhanced_ads_messages_conversation_idx ON enhanced_ads_messages(user_id,conversation_id,created_at)`,
+      `CREATE INDEX IF NOT EXISTS enhanced_ads_events_run_idx ON enhanced_ads_events(user_id,run_id,created_at)`,
+      `CREATE INDEX IF NOT EXISTS enhanced_ads_oauth_states_expiry_idx ON enhanced_ads_oauth_states(expires_at)`,
       `CREATE INDEX IF NOT EXISTS attachments_user_idx ON attachments(user_id,created_at)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS custom_skills_user_name_idx ON custom_skills(user_id,name)`,
       `CREATE UNIQUE INDEX IF NOT EXISTS report_jobs_request_idx ON report_jobs(user_id,account_id,request_fingerprint)`,
@@ -134,6 +156,7 @@ export function ensureSchema(): Promise<void> {
       `ALTER TABLE accounts ADD COLUMN currency TEXT`,
       `ALTER TABLE rank_history ADD COLUMN variant_asins_json TEXT`,
       `ALTER TABLE rank_history ADD COLUMN actual_ip TEXT`,
+      `ALTER TABLE sp_api_settings ADD COLUMN seller_id TEXT`,
     ]) {
       try {
         await db.prepare(statement).run();

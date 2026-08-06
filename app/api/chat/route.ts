@@ -62,6 +62,11 @@ export async function POST(request: Request) {
     const user = await requireUser(request);
     if (user.mustChangePassword) return Response.json({ error: "首次登录必须先修改密码" }, { status: 428 });
     const { message, accountId, conversationId, skillId, attachmentIds = [] } = await request.json() as { message?: string; accountId?: string; conversationId?: string; skillId?: string; attachmentIds?: string[] };
+    const requestedAgentVersion = new URL(request.url).searchParams.get("agentVersion");
+    const configuredAgentVersion = appEnv().ADS_AGENT_VERSION === "v2" ? "v2" : "v1";
+    const agentVersion: "v1" | "v2" = user.role === "admin" && (requestedAgentVersion === "v1" || requestedAgentVersion === "v2")
+      ? requestedAgentVersion
+      : configuredAgentVersion;
     if (!message?.trim()) return Response.json({ error: "请输入指令" }, { status: 400 });
     if (!Array.isArray(attachmentIds) || attachmentIds.length > 5) return Response.json({ error: "每条消息最多 5 个附件" }, { status: 400 });
 
@@ -89,7 +94,7 @@ export async function POST(request: Request) {
         let assistant = "";
         try {
           controller.enqueue(sse("status", { stage: "analyzing", text: activeSkill ? `正在载入 Skill：${activeSkill.name}` : prepared.rows.length ? `正在读取 ${prepared.rows.length} 个附件并匹配 Amazon Ads 操作手册` : "正在匹配 Amazon Ads 操作手册与实时 MCP Schema" }));
-          const plan = await planAgent(user.id, accountId, contextualContent, text => controller.enqueue(sse("status", { stage: "agent", text })), activeSkill, prepared.rows.length ? undefined : message.trim());
+          const plan = await planAgent(user.id, accountId, contextualContent, text => controller.enqueue(sse("status", { stage: "agent", text })), activeSkill, prepared.rows.length ? undefined : message.trim(), convo, agentVersion);
           if (plan.type === "approval") {
             controller.enqueue(sse("approval", { id: plan.id, summary: plan.summary, toolName: plan.toolName, args: plan.args, actionCount: "actionCount" in plan ? plan.actionCount : 1 }));
             assistant = plan.summary;

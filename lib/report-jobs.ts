@@ -202,9 +202,17 @@ async function pollReport(client: AmazonMcpClient, job: JobRow, context: Workflo
   const startedAt = Date.now();
   while (true) {
     if (context.timeoutMs && Date.now() - startedAt >= context.timeoutMs) {
-      const error = `Amazon 报表在 ${Math.round(context.timeoutMs / 60_000)} 分钟内未完成，已停止本次轮询`;
-      await d1().prepare(`UPDATE report_jobs SET status='TIMEOUT',error=?,updated_at=? WHERE id=?`).bind(error, Date.now(), job.id).run();
-      throw new Error(error);
+      // Amazon reporting is asynchronous and larger reports routinely need more
+      // time than a single HTTP request can remain open. A polling budget being
+      // exhausted is not a report failure: preserve the report id so the agent
+      // can resume with reporting-retrieve_report instead of creating a duplicate.
+      await d1().prepare(`UPDATE report_jobs SET status='PENDING',error=NULL,updated_at=? WHERE id=?`).bind(Date.now(), job.id).run();
+      return {
+        reportId: job.report_id,
+        status: "PENDING",
+        resumeWith: "reporting-retrieve_report",
+        note: `报表仍在 Amazon 后台处理中。本次已轮询 ${Math.round(context.timeoutMs / 60_000)} 分钟；请使用同一 reportId 继续查询，不要重新创建报表。`,
+      };
     }
     poll++;
     context.onStatus?.(`正在轮询同一个 Report ID（第 ${poll} 次，间隔 15 秒）`);
@@ -248,7 +256,26 @@ async function pollReport(client: AmazonMcpClient, job: JobRow, context: Workflo
   }
 }
 
+export function prepareReportToolArgs(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  // Campaign reports require the query object, but their schema does not accept
+  // query.fields. Keep the required empty object and remove only its properties.
+  if (name === "reporting-create_campaign_report") {
+    const body = { ...((args.body as Record<string, unknown>) ?? {}) };
+    if (Array.isArray(body.reports)) {
+      body.reports = body.reports.map(report => {
+        if (!report || typeof report !== "object") return report;
+        const copy = { ...(report as Record<string, unknown>) };
+        copy.query = {};
+        return copy;
+      });
+    }
+    return { ...args, body };
+  }
+  return args;
+}
+
 export async function executeReportTool(client: AmazonMcpClient, name: string, args: Record<string, unknown>, context: WorkflowContext): Promise<unknown> {
+  args = prepareReportToolArgs(name, args);
   if (name === "reporting-retrieve_report") {
     const ids = extractReportIds(args);
     if (!ids.length) return client.callTool(name, args);

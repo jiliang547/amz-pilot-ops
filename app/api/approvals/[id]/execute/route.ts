@@ -4,6 +4,8 @@ import { d1 } from "@/lib/db";
 import { AmazonMcpClient, isWriteTool } from "@/lib/amazon-mcp";
 import { expandWorkflowActions, type WorkflowAction } from "@/lib/ads-workflow";
 import { preflightWrite, verifyWrite } from "@/lib/write-verification";
+import { mcpResultError } from "@/lib/ads-agent-v2";
+import { normalizeAmazonToolArguments } from "@/lib/tool-schema";
 
 type ApprovalRow = { id: string; account_id: string; tool_name: string; tool_args: string; status: string };
 type ActionResult = { toolName: string; args: Record<string, unknown>; preflight: unknown; writeResult?: unknown; verification?: unknown; status: "executed" | "partial" | "failed"; error?: string };
@@ -51,6 +53,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       const live = await new AmazonMcpClient(credentials, "FIXED").listTools();
       const liveNames = new Set(live.map(tool => tool.name));
       for (const action of actions) if (!liveNames.has(action.toolName)) throw new Error(`目标工具已不在实时 MCP Schema 中：${action.toolName}`);
+      for (const action of actions) {
+        const schema = live.find(tool => tool.name === action.toolName)?.inputSchema;
+        if (schema) action.args = normalizeAmazonToolArguments(action.toolName, action.args, schema);
+      }
 
       let partial = false;
       for (let index = 0; index < actions.length; index++) {
@@ -59,6 +65,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         try {
           preflight = /(?:^|[-_])create(?:_|$)/i.test(action.toolName) ? null : await preflightWrite(credentials, action.toolName, action.args);
           const writeResult = await new AmazonMcpClient(credentials).callTool(action.toolName, action.args);
+          const writeError = mcpResultError(writeResult);
+          if (writeError) throw new Error(`Amazon 写入工具返回错误：${writeError}`);
           partial = hasPartialSuccess(writeResult);
           let verificationResult = writeResult;
           if (!partial && action.toolName === "campaign_management-create_campaign" && !/campaignId/i.test(JSON.stringify(writeResult))) {

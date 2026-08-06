@@ -67,14 +67,15 @@ test("uses the full streaming MCP agent loop and completes asynchronous reports"
   assert.doesNotMatch(model, /compactSchema|streamAnswer/);
   assert.match(model, /parameters: tool\.inputSchema/);
   assert.match(agent, /while \(true\)/);
-  assert.match(agent, /selectToolsForMessage/);
+  assert.match(agent, /initialAdsTools/);
+  assert.match(agent, /toolsForCapabilities/);
   assert.match(agent, /messages\.push\(\{ role: "tool"/);
   assert.match(agent, /executeReportTool/);
   assert.match(report, /POLL_INTERVAL_MS = 15_000/);
   assert.match(report, /report_jobs/);
   assert.match(route, /planAgent\(user\.id/);
   assert.doesNotMatch(route, /finalMessages|streamAnswer/);
-  assert.match(amazon, /campaign_management-query_portfolio/);
+  assert.match(amazon, /method:"tools\/list"/);
   assert.match(playbook, /今天总花费/);
   assert.match(playbook, /查询轮数不设硬上限/);
   assert.match(report, /downloadedReports/);
@@ -92,8 +93,8 @@ test("uploads account-isolated custom Skills and applies only the selected Skill
       source("db/schema.ts"),
     ]);
   assert.match(page, /上传 \/ 管理 Skill/);
-  assert.match(page, /skillId:selectedSkill\?\.id/);
-  assert.match(page, /SKILL\.md、Markdown、TXT 或 JSON/);
+  assert.match(page, /skillId:\s*selectedSkill\?\.id/);
+  assert.match(page, /SKILL\.md、Markdown、TXT\s*或\s*JSON/);
   assert.match(skillRoute, /requireUser\(request\)/);
   assert.match(skillRoute, /bucket\.put/);
   assert.match(skillRoute, /INSERT INTO custom_skills/);
@@ -161,10 +162,9 @@ test("records private model token usage and exposes Beijing seven-day totals", a
   for (const modelPath of [model, listing, imageWorkflow, imageRoute])
     assert.match(modelPath, /recordTokenUsage/);
 });
-test("compiles all verified Amazon MCP tools into low-token backend skills", async () => {
-  const [compiled, agent, page, approval, verification, scheduler] =
+test("uses the MCP agent for verified Amazon Ads tools", async () => {
+  const [agent, page] =
     await Promise.all([
-      source("lib/compiled-skills.ts"),
       source("lib/agent.ts"),
       source("app/page.tsx"),
     ]);
@@ -189,16 +189,11 @@ test("compiles all verified Amazon MCP tools into low-token backend skills", asy
     "reporting-create_report",
     "reporting-retrieve_report",
   ];
-  for (const tool of tools) assert.match(compiled, new RegExp(tool));
-  assert.match(compiled, /deterministicPlan/);
-  assert.match(compiled, /compiled_skill_planner_metrics/);
-  assert.match(compiled, /cachedTools/);
-  assert.doesNotMatch(compiled, /AMAZON_ADS_PLAYBOOK|tool\.inputSchema/);
-  assert.match(compiled, /INSERT INTO approvals/);
-  assert.match(compiled, /executeReportTool/);
   assert.match(agent, /executeReportTool/);
-  assert.match(agent, /selectToolsForMessage/);
-  assert.match(agent, /maximum of 20 reasoning rounds/);
+  assert.match(agent, /capability-on-demand/);
+  assert.match(agent, /amazon_ads-load_capabilities|ADS_CAPABILITY_TOOL_NAME/);
+  assert.match(agent, /tools\.expanded/);
+  assert.match(agent, /const maximumRounds = useV2 \? \(skill \? 200 : 80\) : 200/);
   assert.match(agent, /The MCP call failed/);
   assert.match(page, /内置运营模板 · MCP Agent/);
 });
@@ -211,11 +206,10 @@ test("treats an empty write verification query as a failed write", async () => {
 });
 
 test("routes campaign ranking questions through backend CSV grouping", async () => {
-  const [ranked, agent, reports, compiled, workflow] = await Promise.all([
+  const [ranked, agent, reports, workflow] = await Promise.all([
     source("lib/ranked-report.ts"),
     source("lib/agent.ts"),
     source("lib/report-jobs.ts"),
-    source("lib/compiled-skills.ts"),
     source("lib/ads-workflow.ts"),
   ]);
   assert.match(ranked, /昨天\|昨日\|yesterday/);
@@ -225,14 +219,13 @@ test("routes campaign ranking questions through backend CSV grouping", async () 
   assert.match(ranked, /modelRounds: 0/);
   assert.doesNotMatch(
     agent,
-    /tryRankedCampaignReport|tryFastAggregateReport|tryCompiledSkill|trySavedSnapshotQuery/,
+    /tryRankedCampaignReport|tryFastAggregateReport|trySavedSnapshotQuery/,
   );
-  assert.match(agent, /selectToolsForMessage/);
+  assert.match(agent, /toolsForCapabilities/);
   assert.match(reports, /summarizeAdsCsv/);
   assert.match(workflow, /dimensions/);
   assert.match(workflow, /searchTerm/);
   assert.match(workflow, /campaignId/);
-  assert.match(compiled, /哪个\|哪一个\|最高\|最低/);
 });
 test("maintains daily ad facts, refreshes attribution, and computes dashboard windows locally", async () => {
   const [
@@ -288,7 +281,7 @@ test("maintains daily ad facts, refreshes attribution, and computes dashboard wi
   assert.match(snapshots, /runManualReportSnapshots/);
   assert.doesNotMatch(
     agent,
-    /trySavedSnapshotQuery|tryRankedCampaignReport|tryFastAggregateReport|tryCompiledSkill/,
+    /trySavedSnapshotQuery|tryRankedCampaignReport|tryFastAggregateReport/,
   );
   assert.match(agent, /executeReportTool/);
   assert.match(dashboard, /dashboardData/);
@@ -316,7 +309,7 @@ test("renders dashboard as a workspace tab and supports date-based overwrite ana
       source("lib/snapshot-reports.ts"),
       source("db/schema.ts"),
     ]);
-  assert.match(page, /dashboardOpen\?"active":""/);
+  assert.match(page, /dashboardOpen \? "active" : ""/);
   assert.match(page, /<DashboardView/);
   assert.doesNotMatch(page, /modal dashboard-modal/);
   assert.match(view, /刷新每日数据/);

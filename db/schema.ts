@@ -590,6 +590,7 @@ export const spApiSettings = sqliteTable("sp_api_settings", {
   marketplaceId: text("marketplace_id").notNull(),
   marketplaceName: text("marketplace_name").notNull(),
   countryCode: text("country_code").notNull(),
+  sellerId: text("seller_id"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 });

@@ -6,6 +6,7 @@ import ListingView from "./listing-view";
 import ImageStudio from "./image-studio";
 import { ReviewsView } from "./reviews-view";
 import StoreManagerView from "./store-manager-view";
+import EnhancedAdsView from "./enhanced-ads-view";
 import TokenUsageButton from "./token-usage-ui";
 import {
   AdminModelManager,
@@ -155,6 +156,7 @@ export default function Home() {
     [imageOpen, setImageOpen] = useState(false),
     [reviewsOpen, setReviewsOpen] = useState(false),
     [storeOpen, setStoreOpen] = useState(false),
+    [enhancedAdsOpen, setEnhancedAdsOpen] = useState(false),
     [dashboard, setDashboard] = useState<DashboardData | null>(null),
     [dashboardLoading, setDashboardLoading] = useState(false),
     [dashboardStatus, setDashboardStatus] = useState(""),
@@ -175,6 +177,20 @@ export default function Home() {
       setUser(d.user);
       if (d.user.mustChangePassword) setPasswordOpen(true);
       await Promise.all([loadAccounts(), loadModelSettings(), loadSkills()]);
+      const oauth = new URLSearchParams(window.location.search).get("enhancedAdsOauth");
+      if (oauth) {
+        setDashboardOpen(false);
+        setRankOpen(false);
+        setListingOpen(false);
+        setImageOpen(false);
+        setReviewsOpen(false);
+        setStoreOpen(false);
+        setEnhancedAdsOpen(true);
+        const params = new URLSearchParams(window.location.search);
+        if (oauth === "success") notify("Amazon 授权成功", `已自动连接 ${params.get("accounts") || "1"} 个广告店铺。`);
+        else notify("Amazon 授权失败", params.get("message") || "请重新发起授权。");
+        window.history.replaceState({}, "", window.location.pathname);
+      }
     })();
   }, []);
   useEffect(() => {
@@ -193,6 +209,7 @@ export default function Home() {
   }
   function loadDashboard() {
     setStoreOpen(false);
+    setEnhancedAdsOpen(false);
     setRankOpen(false);
     setListingOpen(false);
     setImageOpen(false);
@@ -344,7 +361,11 @@ export default function Home() {
     ]);
     abort.current = new AbortController();
     try {
-      const r = await fetch("/api/chat", {
+      const requestedAgentVersion = new URLSearchParams(window.location.search).get("agentVersion");
+      const chatEndpoint = requestedAgentVersion === "v1" || requestedAgentVersion === "v2"
+        ? `/api/chat?agentVersion=${requestedAgentVersion}`
+        : "/api/chat";
+      const r = await fetch(chatEndpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -661,7 +682,7 @@ export default function Home() {
         </div>
         <nav className="nav-list">
           <button
-            className={`nav-item ${!dashboardOpen && !rankOpen && !listingOpen && !imageOpen && !reviewsOpen && !storeOpen ? "active" : ""}`}
+            className={`nav-item ${!dashboardOpen && !rankOpen && !listingOpen && !imageOpen && !reviewsOpen && !storeOpen && !enhancedAdsOpen ? "active" : ""}`}
             onClick={() => {
               setDashboardOpen(false);
               setRankOpen(false);
@@ -669,9 +690,24 @@ export default function Home() {
               setImageOpen(false);
               setReviewsOpen(false);
               setStoreOpen(false);
+              setEnhancedAdsOpen(false);
             }}
           >
             <span className="nav-icon">✦</span>智能广告
+          </button>
+          <button
+            className={`nav-item ${enhancedAdsOpen ? "active" : ""}`}
+            onClick={() => {
+              setDashboardOpen(false);
+              setRankOpen(false);
+              setListingOpen(false);
+              setImageOpen(false);
+              setReviewsOpen(false);
+              setStoreOpen(false);
+              setEnhancedAdsOpen(true);
+            }}
+          >
+            <span className="nav-icon">✧</span>增强型智能广告
           </button>
           <button
             className={`nav-item ${storeOpen ? "active" : ""}`}
@@ -682,6 +718,7 @@ export default function Home() {
               setImageOpen(false);
               setReviewsOpen(false);
               setStoreOpen(true);
+              setEnhancedAdsOpen(false);
             }}
           >
             <span className="nav-icon">▣</span>店铺管理
@@ -695,6 +732,7 @@ export default function Home() {
               setImageOpen(true);
               setReviewsOpen(false);
               setStoreOpen(false);
+              setEnhancedAdsOpen(false);
             }}
           >
             <span className="nav-icon">◇</span>AI 生图
@@ -709,6 +747,7 @@ export default function Home() {
               setImageOpen(false);
               setReviewsOpen(false);
               setStoreOpen(false);
+              setEnhancedAdsOpen(false);
             }}
           >
             <span className="nav-icon">T</span>Listing 文案
@@ -722,6 +761,7 @@ export default function Home() {
               setImageOpen(false);
               setReviewsOpen(false);
               setStoreOpen(false);
+              setEnhancedAdsOpen(false);
             }}
           >
             <span className="nav-icon">#</span>关键词排名
@@ -741,6 +781,7 @@ export default function Home() {
               setImageOpen(false);
               setReviewsOpen(true);
               setStoreOpen(false);
+              setEnhancedAdsOpen(false);
             }}
           >
             <span className="nav-icon">☰</span>获取评论
@@ -790,6 +831,8 @@ export default function Home() {
             <strong>
               {storeOpen
                 ? "店铺管理"
+                : enhancedAdsOpen
+                  ? "增强型智能广告"
                 : imageOpen
                 ? "AI 生图"
                 : reviewsOpen
@@ -834,11 +877,12 @@ export default function Home() {
         {imageOpen && <ImageStudio />}
         {reviewsOpen && <ReviewsView notify={notify} />}
         {storeOpen && <StoreManagerView />}
+        {enhancedAdsOpen && <EnhancedAdsView account={current} onOpenAccount={() => setAccountOpen(true)} />}
         <div
           className="content"
           style={{
             display:
-              rankOpen || listingOpen || imageOpen || reviewsOpen || storeOpen
+              rankOpen || listingOpen || imageOpen || reviewsOpen || storeOpen || enhancedAdsOpen
                 ? "none"
                 : undefined,
           }}

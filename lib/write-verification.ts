@@ -56,7 +56,11 @@ function extractWriteToolError(value: unknown): string | undefined {
   const object = value as Record<string, unknown>;
   if (object.isError === true) return JSON.stringify(object.content ?? object).slice(0, 1200);
   if (object.error && (!Array.isArray(object.error) || object.error.length > 0)) return JSON.stringify(object.error).slice(0, 1200);
-  return extractWriteToolError(object.content);
+  for (const item of Object.values(object)) {
+    const error = extractWriteToolError(item);
+    if (error) return error;
+  }
+  return undefined;
 }
 
 export async function verifyWrite(credentials: AmazonCredentials, toolName: string, args: Record<string, unknown>, writeResult: unknown): Promise<{ tool: string; result: unknown } | null> {

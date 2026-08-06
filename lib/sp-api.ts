@@ -14,6 +14,7 @@ export type SpApiConnection = {
   marketplaceId: string;
   marketplaceName: string;
   countryCode: string;
+  sellerId?: string;
 };
 
 const REGION_HOSTS = {
@@ -25,13 +26,14 @@ const REGION_HOSTS = {
 export async function loadSpApiConnection(userId: string): Promise<SpApiConnection> {
   await ensureSchema();
   const row = await d1().prepare(
-    `SELECT encrypted_credentials,region,marketplace_id,marketplace_name,country_code FROM sp_api_settings WHERE user_id=?`,
+    `SELECT encrypted_credentials,region,marketplace_id,marketplace_name,country_code,seller_id FROM sp_api_settings WHERE user_id=?`,
   ).bind(userId).first<{
     encrypted_credentials: string;
     region: "NA" | "EU" | "FE";
     marketplace_id: string;
     marketplace_name: string;
     country_code: string;
+    seller_id: string | null;
   }>();
   if (!row) throw new Error("请先配置并连接 Amazon SP-API");
   return {
@@ -40,6 +42,7 @@ export async function loadSpApiConnection(userId: string): Promise<SpApiConnecti
     marketplaceId: row.marketplace_id,
     marketplaceName: row.marketplace_name,
     countryCode: row.country_code,
+    sellerId: row.seller_id ?? undefined,
   };
 }
 
@@ -157,8 +160,13 @@ export async function executeSpApiEndpoint(client: SpApiClient, endpointId: stri
   let path = endpoint.path;
   const consumed = new Set<string>();
   path = path.replace(/\{([^}]+)\}/g, (_, key: string) => {
-    const value = parameters[key] ?? parameters.path?.[key];
-    if (value === undefined || value === null || value === "") throw new Error(`端点 ${endpointId} 缺少路径参数 ${key}`);
+    const value = key === "sellerId"
+      ? client.connection.sellerId
+      : parameters[key] ?? parameters.path?.[key];
+    if (value === undefined || value === null || value === "") {
+      if (key === "sellerId") throw new Error(`端点 ${endpointId} 需要 Seller ID / Merchant ID，请在店铺配置中保存，不要用 marketplaceId 代替`);
+      throw new Error(`端点 ${endpointId} 缺少路径参数 ${key}`);
+    }
     consumed.add(key);
     return encodeURIComponent(String(value));
   });

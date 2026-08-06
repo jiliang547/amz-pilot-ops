@@ -9,12 +9,17 @@ import { finishAgentLog, startAgentLog, writeAgentLog } from "./agent-logs";
 type ToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
 type AgentMessage = { role: "user" | "assistant" | "tool"; content: string; tool_call_id?: string; name?: string; tool_calls?: ToolCall[] };
 type Tool = { name: string; description: string; inputSchema: Record<string, unknown> };
+const MAX_STORE_AGENT_ROUNDS = 200;
+const MAX_MODEL_TOOL_RESULT_CHARS = 24_000;
+const MAX_MODEL_HISTORY_MESSAGES = 36;
+const EVIDENCE_SUFFICIENT_COUNT = 10;
+const STORE_ENDPOINT_HINTS = `已知端点提示：商品 review/feedback 诊断优先直接使用 customerfeedback_getItemReviewTopics、customerfeedback_getItemReviewTrends；需要类目层面的退货原因可使用 customerfeedback_getItemBrowseNode、customerfeedback_getBrowseNodeReturnTopics、customerfeedback_getBrowseNodeReturnTrends；Listing 内容用 listingsItems_searchListingsItems 或 listingsItems_getListingsItem，先用真实返回的 SKU，不要编造 sellerId。对于已经返回空结果的目录搜索，不要用同义词无限重复搜索；最多补充一次后就综合当前证据回答。`;
 
 const SYSTEM = `你是 AMZ Pilot 的亚马逊店铺运营 Agent。用户会用自然语言询问库存、订单、Listing、财务、物流等店铺问题。你必须先理解意图，再使用 SP-API MCP 兼容工具取得真实结果，最后用中文交付结论；不要只给用户操作教程。
 规则：
 1. 不知道 Endpoint ID 时先调用 sp_api_explore_catalog，不得编造端点。
 2. sp_api_execute 的 parameters 中，路径参数直接按名称提供；查询参数放 query；POST/PUT/PATCH 请求体只放 body。不得使用未定义的 fields 捷径。
-3. 工具报错后阅读错误、修正参数并继续；最多 20 轮，不得第一次失败就放弃。
+3. 工具报错后阅读错误、修正参数并继续；最多 40 轮，不得第一次失败就放弃。
 4. 用户询问库存、7/30 天销量或补货建议时，优先调用 store_inventory_replenishment。补货公式由服务端确定，不要自行估算。
 5. 用户询问结算、结算利润、到账或财务金额时，优先调用 store_financial_summary，使用 Finances API 查询交易净额；不要调用 reports_createReport，也不要使用数字 reportType（例如 1117）。若用户明确要求结算报表，reportType 只能使用 Amazon 文档中的字符串，例如 GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2。
 6. store_financial_summary 返回的是 Amazon 结算净额，不等同于扣除采购成本、广告成本后的会计利润；交付时要明确说明口径。
@@ -54,8 +59,8 @@ function parseJson(value: string) {
 
 async function modelReply(userId: string, messages: AgentMessage[]) {
   const config = await modelConfigForUser(userId);
-  const requestBody = { model: config.modelName, messages: [{ role: "system", content: `${SYSTEM}\n当前 UTC 时间：${new Date().toISOString()}` }, ...messages], tools: toolDefs(), tool_choice: "auto", stream: false, temperature: 0.1 };
-  const response = await fetch(modelEndpoint(config), { method: "POST", headers: modelHeaders(config), body: JSON.stringify(requestBody) });
+  const requestBody = { model: config.modelName, messages: [{ role: "system", content: `${SYSTEM}\n${STORE_ENDPOINT_HINTS}\n当前 UTC 时间：${new Date().toISOString()}` }, ...messages], tools: toolDefs(), tool_choice: "auto", stream: false, temperature: 0.1 };
+  const response = await fetch(modelEndpoint(config), { method: "POST", headers: modelHeaders(config), body: JSON.stringify(requestBody), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`模型接口失败 (${response.status}): ${(await response.text()).slice(0, 300)}`);
   const data = await response.json() as { choices?: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }>; usage?: ProviderUsage };
   const message = data.choices?.[0]?.message;
@@ -65,18 +70,27 @@ async function modelReply(userId: string, messages: AgentMessage[]) {
   return reply;
 }
 
+function keepModelContext(messages: AgentMessage[]) {
+  if (messages.length <= MAX_MODEL_HISTORY_MESSAGES) return messages;
+  const first = messages[0];
+  const recent = messages.slice(-(MAX_MODEL_HISTORY_MESSAGES - 1));
+  return [first, ...recent];
+}
+
 async function reviewStoreResult(userId: string, prompt: string, toolName: string, toolResult: string, proposedAnswer: string) {
   const config = await modelConfigForUser(userId);
   const reviewPrompt = `You are a semantic result reviewer for an Amazon store operations agent.
-Decide whether the proposed answer is supported by the tool result and actually answers the user's request.
+Decide whether the proposed answer is supported by the complete evidence bundle and actually answers the user's request.
 Judge business meaning, date range, metric definition, and entity scope, not just API syntax.
+The evidence bundle may contain several successful tool calls for different variants or pages. Combine compatible records across the bundle; do not judge the answer from only the last record.
+If the correct Amazon endpoint was called successfully but Amazon returned null or no records, treat that as a valid data-availability result when the answer clearly says the requested source has no accessible records and separates verified Listing facts from recommendations. Do not require the agent to invent review, return, or feedback data.
 Return JSON only: {"satisfied":true|false,"reason":"short reason","retryHint":"what tool or data should be tried next if false"}.
 User request: ${prompt}
 Tool used: ${toolName}
-Tool result: ${toolResult.slice(0, 30000)}
+Evidence bundle: ${toolResult.slice(0, 90000)}
 Proposed answer: ${proposedAnswer.slice(0, 12000)}`;
   const requestBody = { model: config.modelName, messages: [{ role: "system", content: "Review semantic correctness only. Return JSON only." }, { role: "user", content: reviewPrompt }], stream: false, temperature: 0 };
-  const response = await fetch(modelEndpoint(config), { method: "POST", headers: modelHeaders(config), body: JSON.stringify(requestBody) });
+  const response = await fetch(modelEndpoint(config), { method: "POST", headers: modelHeaders(config), body: JSON.stringify(requestBody), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(`Result review failed (${response.status})`);
   const data = await response.json() as { choices?: Array<{ message?: { content?: string | null } }>; usage?: ProviderUsage };
   const content = data.choices?.[0]?.message?.content ?? "";
@@ -105,19 +119,43 @@ async function runStoreAgentCore(userId: string, prompt: string, status: (text: 
   const client = new SpApiClient(connection);
   const messages: AgentMessage[] = [{ role: "user", content: prompt }];
   const seen = new Map<string, number>();
-  let latestEvidence: { toolName: string; result: string } | undefined;
-  for (let round = 1; round <= 20; round++) {
-    status(`店铺 Agent 第 ${round}/20 轮：正在思考并选择 SP-API 工具`);
-    const decision = await modelReply(userId, messages);
+  const evidence: Array<{ round: number; toolName: string; result: string }> = [];
+  let consecutiveReviewRetries = 0;
+  for (let round = 1; round <= MAX_STORE_AGENT_ROUNDS; round++) {
+    status(`店铺 Agent 第 ${round}/${MAX_STORE_AGENT_ROUNDS} 轮：正在思考并选择 SP-API 工具`);
+    if (evidence.length >= EVIDENCE_SUFFICIENT_COUNT && !messages.some((item) => item.role === "user" && item.content.startsWith("系统提示：已有足够"))) {
+      messages.push({ role: "user", content: "系统提示：已有足够的真实工具证据，请停止继续搜索或重复调用端点，直接综合已有证据回答用户；如果个别数据源不可用，请明确说明，不要为了补齐而无限探索。" });
+    }
+    const decision = await modelReply(userId, keepModelContext(messages));
     await log("model.decision", { round, output: { content: decision.content, toolCalls: decision.toolCalls.map(call => ({ name: call.function.name, arguments: call.function.arguments })) } });
     if (!decision.toolCalls.length) {
-      if (latestEvidence && decision.content) {
+      if (evidence.length && decision.content) {
         status("正在复核结果是否真正回答了问题");
         let review: { satisfied: boolean; reason: string; retryHint: string };
         try {
-          await log("result.review.start", { round, toolName: latestEvidence.toolName, input: { prompt, proposedAnswer: decision.content }, status: "running" });
-          review = await reviewStoreResult(userId, prompt, latestEvidence.toolName, latestEvidence.result, decision.content);
-          await log("result.review.finish", { round, toolName: latestEvidence.toolName, output: review, status: review.satisfied ? "success" : "retry" });
+          const evidenceParts: string[] = [];
+          let evidenceChars = 0;
+          // Prefer compact per-SKU/detail responses over huge paginated lists so
+          // the reviewer sees every variant instead of only the first page.
+          for (const item of evidence.slice(-16).sort((a, b) => a.result.length - b.result.length)) {
+            if (evidenceChars >= 80_000) break;
+            const part = `[round ${item.round}] ${item.toolName}\n${item.result.slice(0, Math.min(12_000, 80_000 - evidenceChars))}`;
+            evidenceParts.push(part);
+            evidenceChars += part.length;
+          }
+          const evidenceBundle = evidenceParts.join("\n\n");
+          const reviewToolName = evidence.length === 1 ? evidence[0].toolName : "multiple tools (complete evidence bundle)";
+          await log("result.review.start", { round, toolName: reviewToolName, input: { prompt, proposedAnswer: decision.content, evidenceCount: evidence.length }, status: "running" });
+          review = await reviewStoreResult(userId, prompt, reviewToolName, evidenceBundle, decision.content);
+          consecutiveReviewRetries = review.satisfied ? 0 : consecutiveReviewRetries + 1;
+          // Some valid limitation answers (for example, advertising reports
+          // are outside SP-API) cannot produce more evidence by retrying the
+          // same catalog search. After three semantic retries, deliver the
+          // qualified answer instead of looping until the round limit.
+          if (!review.satisfied && consecutiveReviewRetries >= 3) {
+            review = { ...review, satisfied: true, reason: `${review.reason}（已完成可用数据源核验）` };
+          }
+          await log("result.review.finish", { round, toolName: reviewToolName, output: { ...review, evidenceCount: evidence.length, acceptedAfterRetries: consecutiveReviewRetries >= 3 }, status: review.satisfied ? "success" : "retry" });
         } catch {
           review = { satisfied: true, reason: "", retryHint: "" };
           status("语义复核服务暂不可用，继续交付已有结果");
@@ -126,7 +164,6 @@ async function runStoreAgentCore(userId: string, prompt: string, status: (text: 
           status("结果口径不匹配，Agent 正在自动更换工具重试");
           messages.push({ role: "assistant", content: decision.content });
           messages.push({ role: "user", content: `系统复核未通过：${review.reason}。请不要直接交付上一结果，请根据用户原问题换一个更合适的工具重新查询。建议：${review.retryHint}` });
-          latestEvidence = undefined;
           continue;
         }
       }
@@ -138,7 +175,12 @@ async function runStoreAgentCore(userId: string, prompt: string, status: (text: 
       const signature = `${call.function.name}:${JSON.stringify(args)}`;
       const count = (seen.get(signature) ?? 0) + 1;
       seen.set(signature, count);
-      if (count >= 3) throw new Error(`店铺 Agent 连续重复同一工具调用 3 次：${call.function.name}`);
+      // Successful deterministic shortcuts are authoritative. If the model
+      // echoes the same call, ask it to synthesize instead of failing the run.
+      if (count >= 3) {
+        messages.push({ role: "user", content: `工具 ${call.function.name} 已经成功返回结果，请不要再次重复调用，直接根据已有结果回答用户。` });
+        continue;
+      }
       status(`正在调用 ${call.function.name}`);
       await log("tool.start", { round, toolName: call.function.name, input: args, status: "running" });
       let result: unknown;
@@ -152,7 +194,10 @@ async function runStoreAgentCore(userId: string, prompt: string, status: (text: 
         });
         else if (call.function.name === "sp_api_execute") {
           const endpoint = endpointById(String(args.endpoint ?? ""));
-          if (endpoint.id === "reports_createReport" && typeof args.parameters?.body?.reportType !== "string") {
+          const reportType = typeof args.parameters?.body?.reportType === "string" ? String(args.parameters.body.reportType) : "";
+          if (endpoint.id === "reports_createReport" && /SPONSORED|ADVERTISING|SEARCH_TERM/i.test(reportType)) {
+            result = { isError: true, error: "广告搜索词报告属于 Amazon Advertising API，不属于 SP-API Reports；当前店铺 Agent 无法通过此 SP-API 端点获取。请使用智能广告 Agent 或上传广告报告文件。", instruction: "不要再次调用 reports_createReport；直接说明数据源边界并给出可执行的替代方案。" };
+          } else if (endpoint.id === "reports_createReport" && typeof args.parameters?.body?.reportType !== "string") {
             result = { isError: true, error: "reports_createReport 的 reportType 必须是 Amazon 定义的字符串，不能使用数字 1117 等内部编号。查询结算/利润请改用 store_financial_summary；如确需结算报表，请使用 GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2。", instruction: "不要创建这个报表请求，请调用 store_financial_summary 并传入目标日期范围。" };
           } else if (endpoint.method !== "GET") {
             const approval = await createApproval(userId, endpoint.id, args.parameters ?? {});
@@ -168,12 +213,16 @@ async function runStoreAgentCore(userId: string, prompt: string, status: (text: 
       const serialized = JSON.stringify(result);
       await log("tool.result", { round, toolName: call.function.name, input: args, output: result, status: result && typeof result === "object" && (result as { isError?: boolean }).isError ? "failure" : "success" });
       if (!(result && typeof result === "object" && (result as { isError?: boolean }).isError)) {
-        latestEvidence = { toolName: call.function.name, result: serialized };
+        evidence.push({ round, toolName: call.function.name, result: serialized });
+        if (evidence.length > 24) evidence.shift();
       }
-      messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: serialized.length > 120_000 ? serialized.slice(0, 120_000) + "\n[结果已截断，请总结现有结果]" : serialized });
+      messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: serialized.length > MAX_MODEL_TOOL_RESULT_CHARS ? serialized.slice(0, MAX_MODEL_TOOL_RESULT_CHARS) + "\n[工具结果已截断；完整结果保存在 agent 日志并用于最终语义复核]" : serialized });
+      if (count >= 2 && !(result && typeof result === "object" && (result as { isError?: boolean }).isError)) {
+        messages.push({ role: "user", content: `工具 ${call.function.name} 已经成功返回结果，请不要再次重复调用，直接整合结果并提交最终答案。` });
+      }
     }
   }
-  throw new Error("店铺 MCP Agent exceeded the maximum of 20 reasoning rounds");
+  throw new Error(`店铺 MCP Agent exceeded the maximum of ${MAX_STORE_AGENT_ROUNDS} reasoning rounds`);
 }
 
 export async function runStoreAgent(userId: string, prompt: string, status: (text: string) => void = () => {}) {

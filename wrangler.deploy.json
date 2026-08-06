@@ -5,6 +5,12 @@
     "compatibility_flags":  [
                                 "nodejs_compat"
                             ],
+    "vars":  {
+                 "ADS_AGENT_VERSION":  "v2"
+             },
+    "observability":  {
+                            "enabled":  true
+                        },
     "assets":  {
                    "directory":  "dist/client"
                },
@@ -21,18 +27,31 @@
                            "bucket_name":  "amz-pilot-ops-files"
                        }
                    ],
+    "workflows":  [
+                       {
+                           "binding":  "ENHANCED_ADS_WORKFLOW",
+                           "name":  "amz-pilot-enhanced-ads",
+                           "class_name":  "EnhancedAdsWorkflow"
+                       }
+                   ],
     "images":  {
                    "binding":  "IMAGES"
                },
     "triggers":  {
                      "crons":  [
-                                   "*/5 * * * *"
+                                   "0 0 */2 * *"
                                ]
                  },
     "containers":  [
                        {
                            "class_name":  "RankTrackerContainer",
                            "image":  "./cloudbase-proxy/Dockerfile.rank",
+                           "max_instances":  1,
+                           "instance_type":  "basic"
+                       },
+                       {
+                           "class_name":  "EnhancedAdsContainer",
+                           "image":  "./agentcore/ads-agent/Dockerfile",
                            "max_instances":  1,
                            "instance_type":  "basic"
                        }
@@ -42,11 +61,27 @@
                                              {
                                                  "name":  "RANK_CONTAINER",
                                                  "class_name":  "RankTrackerContainer"
-                            }
+                                             },
+                                             {
+                                                 "name":  "ADS_AGENT_STATE",
+                                                 "class_name":  "AdsAgentState"
+                                             },
+                                             {
+                                                 "name":  "ENHANCED_ADS_CONTAINER",
+                                                 "class_name":  "EnhancedAdsContainer"
+                                             }
                         ]
     },
     "exports":  {
                     "RankTrackerContainer":  {
+                                                  "type":  "durable-object",
+                                                  "storage":  "sqlite"
+                                              },
+                    "AdsAgentState":  {
+                                           "type":  "durable-object",
+                                           "storage":  "sqlite"
+                                              },
+                    "EnhancedAdsContainer":  {
                                                   "type":  "durable-object",
                                                   "storage":  "sqlite"
                                               }

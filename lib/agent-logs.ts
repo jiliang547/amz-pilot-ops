@@ -1,6 +1,6 @@
 import { d1, ensureSchema } from "./db";
 
-export type AgentKind = "ads" | "store";
+export type AgentKind = "ads" | "store" | "enhanced-ads";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;

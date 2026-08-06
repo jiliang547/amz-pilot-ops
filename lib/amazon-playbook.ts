@@ -1,4 +1,6 @@
 export const AMAZON_ADS_PLAYBOOK = `
+TOOL DISCOVERY: The model initially receives a compact Amazon Ads catalog. When the next task or Skill stage needs additional tools, call amazon_ads-load_capabilities for the relevant business groups, then continue with the newly visible live MCP schemas. Do not stop merely because a raw tool is not visible in the first round.
+
 你已预读《Amazon Ads MCP 连接与增删改查测试操作手册》的服务器端精简版。以下规则优先于一般经验：
 
 【连接与账户】
@@ -28,7 +30,7 @@ export const AMAZON_ADS_PLAYBOOK = `
 - 已验证并应完整提供给模型的能力：账户查询；Campaign、Ad Group、Product Ad、Target/Keyword 的查询；Campaign、Ad Group、Product Ad、正向/否定 Target 的创建；Campaign、Ad Group、Product Ad、Target 状态和 Bid 的更新；Target 归档；Campaign、Search Terms、Product Ad 报表；已知 Portfolio ID 反查 Campaign 和关联 Portfolio。
 - 不得根据用户问题关键词删减上述工具。每轮都以实时 tools/list 的完整 inputSchema 为准；查询轮数不设硬上限，直到取得足够的真实数据或 Amazon 返回明确失败。
 【报表】
-- Campaign、Search Terms、Product Ad 报表是异步任务：创建一次后轮询同一个 reportId，状态 PENDING → COMPLETED，不要重复创建。服务端会下载完成后的 CSV 并提供完整 CSV 的 aggregates 汇总，金额回答必须使用 aggregates；不要把 CSV 正文发送给模型。
+- Campaign、Search Terms、Product Ad 报表是异步任务：创建一次后轮询同一个 reportId，状态 PENDING → COMPLETED，不要重复创建。报表完成后可以由后端本地处理 CSV，再把 candidateSearchTerms 等结果交给模型继续 Skill 阶段 B/C；如果当前 Skill 或业务场景适合用户本地处理，也可以让用户下载 CSV、处理后上传结果或继续提供聚合数据。不要把未必要的 CSV 正文塞入模型上下文，模型应根据数据规模和可用处理能力选择后端处理、用户本地处理或分批查询。
 - 查询“今天总花费”时，先用 ads_accounts 返回的广告账户时区确定当日日期，再把该日期同时作为 startDate 和 endDate 创建 Campaign 报表，轮询同一 reportId，最后汇总完整 CSV 的 metric.totalCost；明确提示今天数据可能尚未完全归因。
 - 报表下载地址是短期签名 URL，不得在回答或日志中泄露。
 - NA/EU/FE 是 API 区域组，不是具体站点。每次运行先用 ads_accounts-list_ads_accounts 核对 Profile 对应的 marketplace/country、currency 和 timezone；站点已在账户上下文中确定时不要再次询问用户。
@@ -36,7 +38,7 @@ export const AMAZON_ADS_PLAYBOOK = `
 - 实操耗时可能超过 10 分钟（曾出现 Search Terms 37 次、50 次轮询）；后端不设置四轮或固定查询次数上限。相同条件优先恢复 PENDING 报表或复用已完成报表。
 - Search Terms 请求含 advertisedProduct.id 时同时请求 advertisedProductMarketplace.value，最好也含 ad.id。账户级 Search Terms 可能混入非 SP 数据，必须先查全部 SP campaign ID 并按 ID 过滤，不能按名称过滤。
 - target.id、targetingText.value、matchType.value、placement.value 可能不受报表 schema 支持；字段失败后不得反复重建。没有有效 placement 报表时禁止自动调整 placement。
-- Search Terms 和 Product Ad 的部分维度不支持服务端 filter，应生成账户级 CSV 后按 campaign.id、adGroup.id、ad.id、advertisedProduct.id 本地筛选。
+- Search Terms 和 Product Ad 的部分维度不支持服务端 filter，应生成账户级 CSV，再根据数据规模选择后端本地处理、用户本地处理或分批查询；处理完成后模型继续编排后续 MCP 操作。
 - ACOS = totalCost / sales × 100%；ROAS = sales / totalCost。日期范围默认使用完整自然日，不把当天未完整数据混入比较。
 - query_portfolio 在实测账户可能返回 Unauthorized；不能把 Unauthorized 解释为 0 个 Portfolio。已知 Portfolio ID 时可用 campaign portfolioIdFilter 反查或关联。
 

@@ -10,16 +10,32 @@ export type ReportGroup = {
   adGroupName?: string;
   targetId?: string;
   adId?: string;
+  productId?: string;
   aggregates: Record<string, number>;
   metrics: Record<string, number>;
 };
 
-type ReportSummary = {
+export type SearchTermCandidate = {
+  searchTerm: string;
+  asin?: string;
+  advertisedProductId?: string;
+  campaignId?: string;
+  campaignName?: string;
+  adGroupId?: string;
+  adGroupName?: string;
+  aggregates: Record<string, number>;
+  metrics: Record<string, number>;
+};
+
+export type ReportSummary = {
   rowCount: number;
   columns: string[];
   aggregates: Record<string, number>;
   groups: ReportGroup[];
   dimensions: Record<string, ReportGroup[]>;
+  searchTermCandidates: SearchTermCandidate[];
+  searchTermCandidateTotal: number;
+  searchTermCandidatesTruncated: boolean;
 };
 
 const METRICS: Record<string, string[]> = {
@@ -92,9 +108,50 @@ function relevantGroups(groups: ReportGroup[], queryText: string): ReportGroup[]
   return [...selected.values()].slice(0, 120);
 }
 
+function looksLikeAsin(value: string | undefined): boolean {
+  return Boolean(value && /^B[0-9A-Z]{9}$/i.test(value));
+}
+
+export function buildSearchTermCandidates(groups: ReportGroup[], maxBytes = 280_000): { candidates: SearchTermCandidate[]; total: number; truncated: boolean } {
+  const all = groups
+    .filter(group =>
+      group.dimension === "searchTerm" &&
+      Boolean(group.label.trim()) &&
+      !looksLikeAsin(group.label.trim()) &&
+      (group.aggregates.purchases ?? 0) >= 1 &&
+      (group.aggregates.sales ?? 0) > 0 &&
+      (group.aggregates.clicks ?? 0) >= 1,
+    )
+    .sort((a, b) =>
+      (b.aggregates.purchases ?? 0) - (a.aggregates.purchases ?? 0) ||
+      (b.aggregates.sales ?? 0) - (a.aggregates.sales ?? 0) ||
+      (b.aggregates.clicks ?? 0) - (a.aggregates.clicks ?? 0),
+    )
+    .map(group => ({
+      searchTerm: group.label.trim().toLowerCase(),
+      asin: looksLikeAsin(group.productId) ? group.productId : undefined,
+      advertisedProductId: group.productId,
+      campaignId: group.campaignId,
+      campaignName: group.campaignName,
+      adGroupId: group.adGroupId,
+      adGroupName: group.adGroupName,
+      aggregates: group.aggregates,
+      metrics: group.metrics,
+    }));
+  const candidates: SearchTermCandidate[] = [];
+  let bytes = 2;
+  for (const candidate of all) {
+    const candidateBytes = new TextEncoder().encode(JSON.stringify(candidate)).byteLength + (candidates.length ? 1 : 0);
+    if (candidates.length && bytes + candidateBytes > maxBytes) break;
+    candidates.push(candidate);
+    bytes += candidateBytes;
+  }
+  return { candidates, total: all.length, truncated: candidates.length < all.length };
+}
+
 export function summarizeAdsCsv(csv: string, queryText = ""): ReportSummary {
   const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return { rowCount: 0, columns: [], aggregates: {}, groups: [], dimensions: {} };
+  if (!lines.length) return { rowCount: 0, columns: [], aggregates: {}, groups: [], dimensions: {}, searchTermCandidates: [], searchTermCandidateTotal: 0, searchTermCandidatesTruncated: false };
   const columns = parseCsvLine(lines[0]);
   const headers = columns.map(normalizedHeader);
   const metricIndexes = Object.fromEntries(Object.entries(METRICS).map(([key, names]) => [key, findColumn(headers, names)]));
@@ -132,16 +189,26 @@ export function summarizeAdsCsv(csv: string, queryText = ""): ReportSummary {
     addGroup("campaign", campaignId || campaignName, { label: campaignName || campaignId || "", campaignId, campaignName }, rowMetrics);
     addGroup("adGroup", adGroupId || adGroupName, { label: adGroupName || adGroupId || "", secondary: campaignName, campaignId, campaignName, adGroupId, adGroupName }, rowMetrics);
     addGroup("keyword", targetId || keyword, { label: keyword || targetId || "", secondary: matchType, campaignId, campaignName, adGroupId, adGroupName, targetId }, rowMetrics);
-    addGroup("searchTerm", searchTerm, { label: searchTerm || "", secondary: keyword || adGroupName, campaignId, campaignName, adGroupId, adGroupName, targetId }, rowMetrics);
+    const searchTermKey = searchTerm ? `${productId ?? adGroupId ?? campaignId ?? "unknown"}:${searchTerm}` : undefined;
+    addGroup("searchTerm", searchTermKey, { label: searchTerm || "", secondary: keyword || adGroupName, campaignId, campaignName, adGroupId, adGroupName, targetId, productId }, rowMetrics);
     addGroup("ad", adId, { label: adId || "", secondary: productId, campaignId, campaignName, adGroupId, adGroupName, adId }, rowMetrics);
     addGroup("product", productId, { label: productId || "", secondary: adGroupName, campaignId, campaignName, adGroupId, adGroupName, adId }, rowMetrics);
   }
   const dimensions: Record<string, ReportGroup[]> = {};
+  let searchTermCandidates: SearchTermCandidate[] = [];
+  let searchTermCandidateTotal = 0;
+  let searchTermCandidatesTruncated = false;
   for (const [dimension, map] of maps) {
     const groups = [...map.values()].map(group => ({ ...group, metrics: calculated(group.aggregates) }));
+    if (dimension === "searchTerm") {
+      const result = buildSearchTermCandidates(groups);
+      searchTermCandidates = result.candidates;
+      searchTermCandidateTotal = result.total;
+      searchTermCandidatesTruncated = result.truncated;
+    }
     dimensions[dimension] = relevantGroups(groups, queryText);
   }
-  return { rowCount: Math.max(0, lines.length - 1), columns, aggregates: aggregate, groups: dimensions.campaign ?? [], dimensions };
+  return { rowCount: Math.max(0, lines.length - 1), columns, aggregates: aggregate, groups: dimensions.campaign ?? [], dimensions, searchTermCandidates, searchTermCandidateTotal, searchTermCandidatesTruncated };
 }
 
 function arrayKeyForTool(toolName: string): string | undefined {

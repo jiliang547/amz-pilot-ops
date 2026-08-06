@@ -30,6 +30,11 @@ function toolDefs(tools: McpTool[]) {
 }
 
 type ModelReply = { content: string; toolCalls: ToolCall[]; usage?: ProviderUsage };
+export type DecideOptions = {
+  toolChoice?: "auto" | { type: "function"; function: { name: string } };
+  systemSuffix?: string;
+  operation?: string;
+};
 type JsonChoice = { message?: { content?: string | null; tool_calls?: ToolCall[] } };
 type StreamEvent = {
   choices?: Array<{ delta?: { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; type?: "function"; function?: { name?: string; arguments?: string } }> } }>;
@@ -70,15 +75,16 @@ async function parseStreamingReply(response: Response): Promise<ModelReply> {
   return { content, toolCalls: [...calls.values()].filter(call => call.function.name), usage };
 }
 
-export async function decide(userId: string, messages: AgentMessage[], tools: McpTool[], skill?: ActiveSkill, accountContext = ""): Promise<ModelReply> {
+export async function decide(userId: string, messages: AgentMessage[], tools: McpTool[], skill?: ActiveSkill, accountContext = "", options: DecideOptions = {}): Promise<ModelReply> {
   const config = await modelConfigForUser(userId);
   const stableUtcDate = new Date().toISOString().slice(0, 10);
   const systemContent = `${SYSTEM}${skillSystemBlock(skill)}${accountContext}\n当前服务器 UTC 日期：${stableUtcDate}。用户说“今天”时，优先根据 ads_accounts 返回的广告账户时区确定报表日期。`;
+  const effectiveSystemContent = options.systemSuffix ? `${systemContent}\n${options.systemSuffix}` : systemContent;
   const requestBody = {
     model: config.modelName,
-    messages: [{ role: "system" as const, content: systemContent }, ...messages],
+    messages: [{ role: "system" as const, content: effectiveSystemContent }, ...messages],
     tools: tools.length ? toolDefs(tools) : undefined,
-    tool_choice: tools.length ? "auto" : undefined,
+    tool_choice: tools.length ? (options.toolChoice ?? "auto") : undefined,
     stream: true,
     temperature: 0.1,
   };
@@ -86,7 +92,7 @@ export async function decide(userId: string, messages: AgentMessage[], tools: Mc
   console.info("model_request_metrics", {
     source: config.source,
     model: config.modelName,
-    systemChars: systemContent.length,
+    systemChars: effectiveSystemContent.length,
     messageChars: JSON.stringify(messages).length,
     toolSchemaChars: requestBody.tools ? JSON.stringify(requestBody.tools).length : 0,
     requestChars: serializedBody.length,
@@ -100,13 +106,13 @@ export async function decide(userId: string, messages: AgentMessage[], tools: Mc
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream")) {
     const reply = await parseStreamingReply(response);
-    await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: "agent.decide", usage: reply.usage, request: requestBody, response: { content: reply.content, toolCalls: reply.toolCalls } });
+    await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: options.operation ?? "agent.decide", usage: reply.usage, request: requestBody, response: { content: reply.content, toolCalls: reply.toolCalls } });
     return reply;
   }
   const data = await response.json() as { choices?: JsonChoice[]; usage?: ProviderUsage };
   const message = data.choices?.[0]?.message;
   if (!message) throw new Error("模型未返回结果");
   const reply = { content: message.content ?? "", toolCalls: message.tool_calls ?? [], usage: data.usage };
-  await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: "agent.decide", usage: data.usage, request: requestBody, response: reply });
+  await recordTokenUsage({ userId, modelName: config.modelName, modelSource: config.source, operation: options.operation ?? "agent.decide", usage: data.usage, request: requestBody, response: reply });
   return reply;
 }

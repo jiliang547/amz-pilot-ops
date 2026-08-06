@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Settings = { configured: boolean; region?: string; marketplaceId?: string; marketplaceName?: string; countryCode?: string };
+type Settings = { configured: boolean; region?: string; marketplaceId?: string; marketplaceName?: string; countryCode?: string; sellerId?: string };
 type Message = { id: string; role: "user" | "assistant"; text: string };
 type Row = { sku: string; asin: string; productName: string; inventory: number; sales7: number; sales30: number; dailySales: number; targetInventory: number; recommendedReplenishment: number };
 type Snapshot = { generatedAt: string; marketplace: { name: string }; formula: string; totals: { skuCount: number; inventory: number; sales7: number; sales30: number; recommendedReplenishment: number }; rows: Row[] };
@@ -31,7 +31,7 @@ async function consumeSse(response: Response, onEvent: (event: string, data: any
 export default function StoreManagerView() {
   const [settings, setSettings] = useState<Settings>({ configured: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [credentials, setCredentials] = useState({ clientId: "", clientSecret: "", refreshToken: "" });
+  const [credentials, setCredentials] = useState({ clientId: "", clientSecret: "", refreshToken: "", sellerId: "" });
   const [saving, setSaving] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -49,6 +49,11 @@ export default function StoreManagerView() {
     if (thread) thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
   }, [messages, status]);
 
+  function openSettings() {
+    setCredentials(current => ({ ...current, sellerId: settings.sellerId ?? "" }));
+    setSettingsOpen(true);
+  }
+
   async function loadSettings() {
     const response = await fetch("/api/store/settings");
     if (response.ok) setSettings(await response.json());
@@ -63,7 +68,7 @@ export default function StoreManagerView() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "连接失败");
       setSettings({ configured: true, ...data });
-      setCredentials({ clientId: "", clientSecret: "", refreshToken: "" });
+      setCredentials({ clientId: "", clientSecret: "", refreshToken: "", sellerId: "" });
       setSettingsOpen(false);
       setStatus(`已连接 ${data.marketplaceName}`);
     } catch (error) { setStatus(error instanceof Error ? error.message : "连接失败"); }
@@ -71,7 +76,7 @@ export default function StoreManagerView() {
   }
 
   async function runInventory() {
-    if (!settings.configured) { setSettingsOpen(true); return; }
+    if (!settings.configured) { openSettings(); return; }
     setBusy(true); setSnapshot(null); setReplenishmentFilter("needs"); setStatus("正在启动库存与补货预估");
     try {
       const response = await fetch("/api/store/inventory", { method: "POST" });
@@ -91,7 +96,7 @@ export default function StoreManagerView() {
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
-    if (!settings.configured) { setSettingsOpen(true); return; }
+    if (!settings.configured) { openSettings(); return; }
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", text };
     const history = messages;
     setMessages(current => [...current, userMessage]); setInput(""); setBusy(true); setStatus("正在理解店铺运营意图"); setApproval(null);
@@ -136,7 +141,7 @@ export default function StoreManagerView() {
           <div className="store-connection-head"><span>连接状态</span><b>{settings.configured ? "实时" : "等待连接"}</b></div>
           <div className="store-connection-main"><i className={settings.configured ? "online" : "offline"} /><strong>{settings.configured ? "SP-API 已连接" : "尚未连接 SP-API"}</strong></div>
           <span>{settings.configured ? `${settings.marketplaceName} · ${settings.region}` : "配置三项 Amazon 授权密钥后开始"}</span>
-          <button onClick={() => setSettingsOpen(true)}>{settings.configured ? "更新密钥" : "配置密钥"}<em>→</em></button>
+          <button onClick={openSettings}>{settings.configured ? "更新连接配置" : "配置连接"}<em>→</em></button>
         </div>
       </section>
 
@@ -182,11 +187,16 @@ export default function StoreManagerView() {
         </tbody></table></div>
       </section>}
 
-      {settingsOpen && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><form className="modal-card store-settings" onSubmit={saveSettings}><div className="modal-head"><div><strong>连接 Amazon SP-API</strong><span>密钥在服务端 AES-GCM 加密保存，页面不会回显。</span></div><button type="button" onClick={() => setSettingsOpen(false)}>×</button></div>
-        <label>SP_API_CLIENT_ID<input autoComplete="off" value={credentials.clientId} onChange={event => setCredentials(current => ({ ...current, clientId: event.target.value }))} required /></label>
-        <label>SP_API_CLIENT_SECRET<input type="password" autoComplete="new-password" value={credentials.clientSecret} onChange={event => setCredentials(current => ({ ...current, clientSecret: event.target.value }))} required /></label>
-        <label>SP_API_REFRESH_TOKEN<textarea value={credentials.refreshToken} onChange={event => setCredentials(current => ({ ...current, refreshToken: event.target.value }))} required /></label>
-        <div className="modal-actions"><button type="button" className="secondary" onClick={() => setSettingsOpen(false)}>取消</button><button disabled={saving}>{saving ? "验证中…" : "验证并连接"}</button></div>
+      {settingsOpen && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><form className="modal-card store-settings store-settings-dialog" onSubmit={saveSettings}><div className="modal-head"><div><strong>配置 Amazon SP-API</strong><span>保存后由店铺 Agent 按接口需求自动使用，不会让模型猜测账户参数。</span></div><button type="button" onClick={() => setSettingsOpen(false)}>×</button></div>
+        <div className="settings-section"><div className="settings-section-title"><b>授权密钥</b><span>必填 · 服务端加密保存</span></div>
+          <label><span>SP_API_CLIENT_ID <i>必填</i></span><input autoComplete="off" value={credentials.clientId} onChange={event => setCredentials(current => ({ ...current, clientId: event.target.value }))} required /></label>
+          <label><span>SP_API_CLIENT_SECRET <i>必填</i></span><input type="password" autoComplete="new-password" value={credentials.clientSecret} onChange={event => setCredentials(current => ({ ...current, clientSecret: event.target.value }))} required /></label>
+          <label><span>SP_API_REFRESH_TOKEN <i>必填</i></span><textarea value={credentials.refreshToken} onChange={event => setCredentials(current => ({ ...current, refreshToken: event.target.value }))} required /></label>
+        </div>
+        <div className="settings-section settings-section-optional"><div className="settings-section-title"><b>账户识别</b><span>可选 · 仅 Listings 等接口需要</span></div>
+          <label><span>Seller ID / Merchant ID <em>可选</em></span><input autoComplete="off" value={credentials.sellerId} placeholder="例如：AXXXXXXXXXXXX" onChange={event => setCredentials(current => ({ ...current, sellerId: event.target.value }))} /><small>这是卖家账户标识，不是 marketplaceId；配置一次后，Agent 会在需要时自动注入。</small></label>
+        </div>
+        <div className="modal-actions"><button type="button" className="secondary" onClick={() => setSettingsOpen(false)}>取消</button><button disabled={saving}>{saving ? "正在验证并保存…" : "验证密钥并保存配置"}</button></div>
       </form></div>}
     </div>
   );
